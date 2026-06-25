@@ -296,6 +296,9 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
 */
 __global__ void kernUpdateVelocityBruteForce(int N, glm::vec3 *pos,
   glm::vec3 *vel1, glm::vec3 *vel2) {
+  // Compute a new velocity based on pos and vel1
+  // Clamp the speed
+  // Record the new velocity into vel2. Question: why NOT vel1?
   int index = threadIdx.x + (blockIdx.x * blockDim.x);
   if (index >= N) {
     return;
