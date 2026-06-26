@@ -194,6 +194,7 @@ void Boids::initSimulation(int N) {
   // TODO-2.1 TODO-2.3 - Allocate additional buffers here.
   
   // Initialize CUDA Events for performance measurement
+  //hardware handle creation is expensive,reutilize is strongly recommended
   cudaEventCreate(&perfEvent_start);
   cudaEventCreate(&perfEvent_stop);
   cudaEventCreate(&perfEvent_kernelStart);
@@ -440,6 +441,9 @@ void Boids::stepSimulationNaive(float dt) {
   dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
 
   float elapsedTime = 0.0f;
+  //non-blocking cpu calling,returns immediately
+  //param:cudaEvent_t ,cudaStream_t
+  //send a RECORD_EVENT hardware instruction to the stream.
   cudaEventRecord(perfEvent_start, 0);
 
   // Measure velocity update kernel
@@ -459,7 +463,13 @@ void Boids::stepSimulationNaive(float dt) {
   checkCUDAErrorWithLine("kernUpdatePos failed!");
 
   cudaEventRecord(perfEvent_stop, 0);
+  //blocking cpu calling,cpu thread will be suspended by os
+  //now cuda driver is listening on hardware interrupt for the graphic card,once
+  //GPU hardware completes RECORD_EVENT instruction and writing back timestamp
+  //card will erupts a hardware interrupt to CPU,which is handled by driver,then
+  //os wakes up the suspended CPU thread
   cudaEventSynchronize(perfEvent_stop);
+  //do the calculation,cudaErrorNotReady when end event has not been writen back
   cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
 
 
