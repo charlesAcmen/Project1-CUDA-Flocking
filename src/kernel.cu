@@ -49,6 +49,9 @@ void checkCUDAError(const char *msg, int line = -1) {
 /*! Block size used for CUDA kernel launch. */
 #define blockSize 128
 
+// Runtime configurable block size (overrides blockSize if set)
+int g_runtimeBlockSize = 0;  // 0 means use default blockSize
+
 // LOOK-1.2 Parameters for the boids algorithm.
 // These worked well in our reference implementation.
 #define rule1Distance 5.0f
@@ -70,6 +73,17 @@ void checkCUDAError(const char *msg, int line = -1) {
 
 int numObjects;
 dim3 threadsPerBlock(blockSize);
+
+// Helper function to get effective block size
+inline int getEffectiveBlockSize() {
+    return (g_runtimeBlockSize > 0) ? g_runtimeBlockSize : blockSize;
+}
+
+// Helper function to update threadsPerBlock
+inline void updateThreadsPerBlock() {
+    int effectiveBlockSize = getEffectiveBlockSize();
+    threadsPerBlock = dim3(effectiveBlockSize);
+}
 
 // LOOK-1.2 - These buffers are here to hold all your boid information.
 // These get allocated for you in Boids::initSimulation.
@@ -561,7 +575,7 @@ __global__ void kernUpdateVelNeighborSearchScattered(
             continue;
           }
           
-          //indirect addressing
+          //indirect addressing,neighborIdx might jump randomly,leading to consistent cache miss
           int neighborIdx = particleArrayIndices[i];
           
           // DEFENSIVE: Validate neighborIdx before using it to access arrays
@@ -719,7 +733,7 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
           if (neighborIdx == index) {
             continue;
           }
-
+          //direct addressing
           glm::vec3 offset = pos[neighborIdx] - selfPos;
           float distance = glm::length(offset);
 
@@ -792,6 +806,7 @@ __global__ void kernReshuffleData(int N, int *particleArrayIndices,
   }
 
   // Copy data from original scattered position to new coherent position
+  // memory friendly
   newPos[index] = oldPos[originalIndex];
   newVel[index] = oldVel[originalIndex];
 }
@@ -1066,6 +1081,24 @@ void Boids::resetPerformanceMetrics() {
 
 Boids::PerformanceMetrics Boids::getPerformanceMetrics() {
   return g_perfMetrics;
+}
+
+int Boids::getBlockSize() {
+  return getEffectiveBlockSize();
+}
+
+void Boids::stepSimulation(SimulationMethod method, float dt) {
+  switch (method) {
+    case SimulationMethod::NAIVE:
+      stepSimulationNaive(dt);
+      break;
+    case SimulationMethod::SCATTERED_GRID:
+      stepSimulationScatteredGrid(dt);
+      break;
+    case SimulationMethod::COHERENT_GRID:
+      stepSimulationCoherentGrid(dt);
+      break;
+  }
 }
 
 void Boids::unitTest() {
