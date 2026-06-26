@@ -5,6 +5,10 @@ cis5650_boids_generated_kernel*
 *.sln
 *.vcxproj
 *.xcodeproj
+*.csv
+*.md
+!README.md
+*.png
 build
 
 # Created by https://www.gitignore.io/api/linux,osx,sublimetext,windows,jetbrains,vim,emacs,cmake,c++,cuda,visualstudio,webstorm,eclipse,xcode

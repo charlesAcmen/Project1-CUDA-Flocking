@@ -12,6 +12,8 @@
 #include <iostream>
 #include <memory>
 #include <sstream>
+#include <fstream>
+#include <iomanip>
 
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -29,6 +31,12 @@
 // LOOK-1.2 - change this to adjust particle count in the simulation
 const int N_FOR_VIS = 5000;
 const float DT = 0.2f;
+
+// Performance measurement
+std::ofstream g_perfCSV;
+cudaEvent_t g_frameStart;
+cudaEvent_t g_frameStop;
+float g_lastFrameTime_ms = 0.0f;
 
 /**
 * C main function.
@@ -120,6 +128,32 @@ bool init(int argc, char **argv) {
   // Initialize N-body simulation
   Boids::initSimulation(N_FOR_VIS);
 
+  // Create CUDA events for frame timing
+  cudaEventCreate(&g_frameStart);
+  cudaEventCreate(&g_frameStop);
+
+  // Open CSV file for performance logging
+  std::ostringstream csvFilename;
+  csvFilename << "perf_";
+  #if COHERENT_GRID
+  csvFilename << "coherent";
+  #elif UNIFORM_GRID
+  csvFilename << "scattered";
+  #else
+  csvFilename << "naive";
+  #endif
+  csvFilename << "_N" << N_FOR_VIS << ".csv";
+  
+  g_perfCSV.open(csvFilename.str(), std::ios::out | std::ios::trunc);
+  if (g_perfCSV.is_open()) {
+    g_perfCSV << "frame,fps,frame_ms,";
+    g_perfCSV << "kern_update_velocity_ms,kern_update_pos_ms,";
+    g_perfCSV << "kern_compute_indices_ms,kern_reset_buffer_ms,";
+    g_perfCSV << "kern_identify_cell_ms,thrust_sort_ms,";
+    g_perfCSV << "kern_reshuffle_ms,total_step_ms\n";
+    g_perfCSV << std::fixed << std::setprecision(4);
+  }
+
   updateCamera();
 
   initShaders(program);
@@ -204,6 +238,9 @@ void initShaders(GLuint * program) {
     cudaGLMapBufferObject((void**)&dptrVertPositions, boidVBO_positions);
     cudaGLMapBufferObject((void**)&dptrVertVelocities, boidVBO_velocities);
 
+    // Record frame start time
+    cudaEventRecord(g_frameStart, 0);
+
     // execute the kernel
     #if UNIFORM_GRID && COHERENT_GRID
     Boids::stepSimulationCoherentGrid(DT);
@@ -216,6 +253,12 @@ void initShaders(GLuint * program) {
     #if VISUALIZE
     Boids::copyBoidsToVBO(dptrVertPositions, dptrVertVelocities);
     #endif
+
+    // Record frame end time
+    cudaEventRecord(g_frameStop, 0);
+    cudaEventSynchronize(g_frameStop);
+    cudaEventElapsedTime(&g_lastFrameTime_ms, g_frameStart, g_frameStop);
+
     // unmap buffer object
     cudaGLUnmapBufferObject(boidVBO_positions);
     cudaGLUnmapBufferObject(boidVBO_velocities);
@@ -243,11 +286,32 @@ void initShaders(GLuint * program) {
 
       runCUDA();
 
+      // Get detailed performance metrics from kernel
+      Boids::PerformanceMetrics metrics = Boids::getPerformanceMetrics();
+
+      // Write performance data to CSV
+      if (g_perfCSV.is_open()) {
+        g_perfCSV << frame << ","
+                  << fps << ","
+                  << g_lastFrameTime_ms << ","
+                  << metrics.kernUpdateVelocity_ms << ","
+                  << metrics.kernUpdatePos_ms << ","
+                  << metrics.kernComputeIndices_ms << ","
+                  << metrics.kernResetBuffer_ms << ","
+                  << metrics.kernIdentifyCellStartEnd_ms << ","
+                  << metrics.thrustSort_ms << ","
+                  << metrics.kernReshuffleData_ms << ","
+                  << metrics.totalStepTime_ms << "\n";
+      }
+
       std::ostringstream ss;
       ss << "[";
       ss.precision(1);
       ss << std::fixed << fps;
-      ss << " fps] " << deviceName;
+      ss << " fps | ";
+      ss.precision(3);
+      ss << "frame: " << g_lastFrameTime_ms << "ms";
+      ss << "] " << deviceName;
       glfwSetWindowTitle(window, ss.str().c_str());
 
       glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -265,6 +329,16 @@ void initShaders(GLuint * program) {
       glfwSwapBuffers(window);
       #endif
     }
+
+    // Cleanup
+    if (g_perfCSV.is_open()) {
+      g_perfCSV.close();
+    }
+    if (g_frameStart) {
+      cudaEventDestroy(g_frameStart);
+      cudaEventDestroy(g_frameStop);
+    }
+
     glfwDestroyWindow(window);
     glfwTerminate();
   }

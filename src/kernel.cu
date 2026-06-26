@@ -104,6 +104,19 @@ float gridCellWidth;
 float gridInverseCellWidth;
 glm::vec3 gridMinimum;
 
+/***********************************************
+* Performance Measurement using CUDA Events   *
+***********************************************/
+
+// CUDA Events for performance measurement
+cudaEvent_t perfEvent_start;
+cudaEvent_t perfEvent_stop;
+cudaEvent_t perfEvent_kernelStart;
+cudaEvent_t perfEvent_kernelStop;
+
+// Performance metrics storage
+Boids::PerformanceMetrics g_perfMetrics;
+
 /******************
 * initSimulation *
 ******************/
@@ -179,6 +192,16 @@ void Boids::initSimulation(int N) {
   gridMinimum.z -= halfGridWidth;
 
   // TODO-2.1 TODO-2.3 - Allocate additional buffers here.
+  
+  // Initialize CUDA Events for performance measurement
+  cudaEventCreate(&perfEvent_start);
+  cudaEventCreate(&perfEvent_stop);
+  cudaEventCreate(&perfEvent_kernelStart);
+  cudaEventCreate(&perfEvent_kernelStop);
+  
+  // Reset performance metrics
+  resetPerformanceMetrics();
+  
   cudaDeviceSynchronize();
 }
 
@@ -255,7 +278,7 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
       continue;
     }
 
-    glm::vec3 offset = pos[i] - selfPos;
+    glm::vec3 offset = pos[i] - selfPos;//the offset vector from the current boid to the neighbor boid
     float distance = sqrtf(offset.x * offset.x + offset.y * offset.y + offset.z * offset.z);
 
     if (distance < rule1Distance) {
@@ -264,7 +287,7 @@ __device__ glm::vec3 computeVelocityChange(int N, int iSelf, const glm::vec3 *po
     }
 
     if (distance < rule2Distance) {
-      separation -= offset;
+      separation -= offset;//the closer the neighbor, the greater the repulsion
     }
 
     if (distance < rule3Distance) {
@@ -416,14 +439,31 @@ __global__ void kernUpdateVelNeighborSearchCoherent(
 void Boids::stepSimulationNaive(float dt) {
   dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
 
+  float elapsedTime = 0.0f;
+  cudaEventRecord(perfEvent_start, 0);
+
+  // Measure velocity update kernel
+  cudaEventRecord(perfEvent_kernelStart, 0);
   kernUpdateVelocityBruteForce<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernUpdateVelocity_ms, perfEvent_kernelStart, perfEvent_kernelStop);
   checkCUDAErrorWithLine("kernUpdateVelocityBruteForce failed!");
 
+  // Measure position update kernel
+  cudaEventRecord(perfEvent_kernelStart, 0);
   kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_pos, dev_vel2);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernUpdatePos_ms, perfEvent_kernelStart, perfEvent_kernelStop);
   checkCUDAErrorWithLine("kernUpdatePos failed!");
 
-  cudaDeviceSynchronize();
+  cudaEventRecord(perfEvent_stop, 0);
+  cudaEventSynchronize(perfEvent_stop);
+  cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
 
+
+  //swap to update velocity
   glm::vec3 *temp = dev_vel1;
   dev_vel1 = dev_vel2;
   dev_vel2 = temp;
@@ -468,6 +508,20 @@ void Boids::endSimulation() {
   cudaFree(dev_pos);
 
   // TODO-2.1 TODO-2.3 - Free any additional buffers here.
+  
+  // Destroy CUDA Events
+  cudaEventDestroy(perfEvent_start);
+  cudaEventDestroy(perfEvent_stop);
+  cudaEventDestroy(perfEvent_kernelStart);
+  cudaEventDestroy(perfEvent_kernelStop);
+}
+
+void Boids::resetPerformanceMetrics() {
+  memset(&g_perfMetrics, 0, sizeof(Boids::PerformanceMetrics));
+}
+
+Boids::PerformanceMetrics Boids::getPerformanceMetrics() {
+  return g_perfMetrics;
 }
 
 void Boids::unitTest() {
