@@ -12,12 +12,17 @@ import matplotlib
 import numpy as np
 import glob
 import json
+import sys
 from pathlib import Path
 
 matplotlib.rcParams['figure.dpi'] = 150
 matplotlib.rcParams['font.size'] = 11
 
-RESULTS_DIR = "../results"
+# Accept optional directory argument; fall back to root results directory
+if len(sys.argv) > 1:
+    RESULTS_DIR = sys.argv[1]
+else:
+    RESULTS_DIR = "../results"
 ALL_METHODS = ["naive", "scattered", "coherent"]
 METHOD_COLORS = {"naive": "#e74c3c", "scattered": "#3498db", "coherent": "#2ecc71"}
 METHOD_LABELS = {"naive": "Naive (O(N^2))", "scattered": "Scattered Grid", "coherent": "Coherent Grid"}
@@ -117,46 +122,42 @@ def analyze_experiment_1(data):
 
     for method in ALL_METHODS:
         print(f"\n  [{METHOD_LABELS[method]}]")
-        for vis in [True, False]:
-            vis_str = "vis" if vis else "novis"
-            ns = sorted(data[method][vis].keys())
-            if not ns:
-                continue
-            print(f"\n    {vis_str}:")
-            for n in ns:
-                s = data[method][vis][n]
-                fps = s.get('mean_fps', 0)
-                ms = s.get('mean_total_step_ms', 0)
-                print(f"      N={n:7d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
+        ns = sorted(data[method][False].keys())  # no-vis only
+        if not ns:
+            continue
+        for n in ns:
+            s = data[method][False][n]
+            fps = s.get('mean_fps', 0)
+            ms = s.get('mean_total_step_ms', 0)
+            print(f"    N={n:7d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
 
     plot_experiment_1_fps(data)
     plot_experiment_1_kernel(data)
 
 
 def plot_experiment_1_fps(data):
-    """FPS vs N: 2-panel (with/without vis), all three methods on each panel."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Experiment 1: FPS vs Boid Count (N)', fontsize=14, fontweight='bold')
+    """FPS vs N for all three methods (no visualization)."""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 7))
+    fig.suptitle('Experiment 1: FPS vs Boid Count (N) — No Visualization', fontsize=14, fontweight='bold')
 
-    for ax, vis, title in [(ax1, True, 'With Visualization'), (ax2, False, 'Without Visualization')]:
-        for method in ALL_METHODS:
-            ns = sorted(data[method][vis].keys())
-            if not ns:
-                continue
-            fps_vals = [data[method][vis][n].get('mean_fps', 0) for n in ns]
-            ax.plot(ns, fps_vals,
-                    marker=METHOD_MARKERS[method],
-                    color=METHOD_COLORS[method],
-                    label=METHOD_LABELS[method],
-                    linewidth=2, markersize=8)
+    for method in ALL_METHODS:
+        ns = sorted(data[method][False].keys())
+        if not ns:
+            continue
+        fps_vals = [data[method][False][n].get('mean_fps', 0) for n in ns]
+        ax.plot(ns, fps_vals,
+                marker=METHOD_MARKERS[method],
+                color=METHOD_COLORS[method],
+                label=METHOD_LABELS[method],
+                linewidth=2, markersize=8)
 
-        ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-        ax.set_ylabel('FPS', fontweight='bold')
-        ax.set_title(title, fontsize=12)
-        ax.legend()
-        ax.grid(alpha=0.3)
-        ax.set_xscale('log')
-        ax.set_yscale('log')
+    ax.set_xlabel('Number of Boids (N)', fontweight='bold')
+    ax.set_ylabel('FPS', fontweight='bold')
+    ax.set_title('FPS vs Boid Count', fontsize=12)
+    ax.legend()
+    ax.grid(alpha=0.3)
+    ax.set_xscale('log')
+    ax.set_yscale('log')
 
     plt.tight_layout()
     out = str(Path(RESULTS_DIR) / 'exp1_fps_vs_n.png')
@@ -198,35 +199,35 @@ def plot_experiment_1_kernel(data):
 
 
 def plot_experiment_1_comparison(data):
-    """Side-by-side FPS at common N values, both vis modes."""
-    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-    fig.suptitle('Experiment 1: Algorithm Comparison at Each N', fontsize=14, fontweight='bold')
+    """Side-by-side FPS comparison at common N values (no visualization)."""
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    fig.suptitle('Experiment 1: Algorithm Comparison at Each N — No Visualization', fontsize=14, fontweight='bold')
 
-    for ax, vis, title in [(axes[0], True, 'With Visualization'), (axes[1], False, 'Without Visualization')]:
-        # Collect common N values across all methods
-        all_ns = set()
-        for m in ALL_METHODS:
-            all_ns.update(data[m][vis].keys())
-        common_ns = sorted(all_ns)
-        if not common_ns:
-            continue
+    # Collect common N values across all methods
+    all_ns = set()
+    for m in ALL_METHODS:
+        all_ns.update(data[m][False].keys())
+    common_ns = sorted(all_ns)
+    if not common_ns:
+        plt.close()
+        return
 
-        x = np.arange(len(common_ns))
-        width = 0.25
-        for i, method in enumerate(ALL_METHODS):
-            fps_vals = [data[method][vis].get(n, {}).get('mean_fps', 0) for n in common_ns]
-            ax.bar(x + i * width, fps_vals, width,
-                   label=METHOD_LABELS[method],
-                   color=METHOD_COLORS[method], alpha=0.85)
+    x = np.arange(len(common_ns))
+    width = 0.25
+    for i, method in enumerate(ALL_METHODS):
+        fps_vals = [data[method][False].get(n, {}).get('mean_fps', 0) for n in common_ns]
+        ax.bar(x + i * width, fps_vals, width,
+               label=METHOD_LABELS[method],
+               color=METHOD_COLORS[method], alpha=0.85)
 
-        ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-        ax.set_ylabel('FPS', fontweight='bold')
-        ax.set_title(title, fontsize=12)
-        ax.set_xticks(x + width)
-        ax.set_xticklabels([str(n) for n in common_ns], rotation=30, ha='right')
-        ax.legend()
-        ax.grid(axis='y', alpha=0.3)
-        ax.set_yscale('log')
+    ax.set_xlabel('Number of Boids (N)', fontweight='bold')
+    ax.set_ylabel('FPS', fontweight='bold')
+    ax.set_title('Algorithm FPS Comparison at Each N', fontsize=12)
+    ax.set_xticks(x + width)
+    ax.set_xticklabels([str(n) for n in common_ns], rotation=30, ha='right')
+    ax.legend()
+    ax.grid(axis='y', alpha=0.3)
+    ax.set_yscale('log')
 
     plt.tight_layout()
     out = str(Path(RESULTS_DIR) / 'exp1_comparison_bar.png')

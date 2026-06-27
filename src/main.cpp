@@ -268,6 +268,7 @@ void initShaders(GLuint * program) {
     double fps = 0;
     double timebase = 0;
     int frame = 0;
+    int totalFrames = 0;
 
     Boids::unitTest(); // LOOK-1.2 We run some basic example code to make sure
                        // your CUDA development setup is ready to go.
@@ -276,22 +277,23 @@ void initShaders(GLuint * program) {
       glfwPollEvents();
 
       frame++;
+      totalFrames++;
       double time = glfwGetTime();
 
-      if (time - timebase > 1.0) {
-        fps = frame / (time - timebase);
-        timebase = time;
-        frame = 0;
-      }
+      // FPS is computed after runCUDA() from the CUDA-event-measured frame time,
+      // which is far more accurate than wall-clock timing for GPU workloads.
 
       runCUDA();
+
+      // Compute FPS from CUDA-event-measured frame time (accurate GPU timing)
+      fps = (g_lastFrameTime_ms > 0.0f) ? (1000.0 / g_lastFrameTime_ms) : 0.0;
 
       // Get detailed performance metrics from kernel
       Boids::PerformanceMetrics metrics = Boids::getPerformanceMetrics();
 
       // Write performance data to CSV
       if (g_perfCSV.is_open()) {
-        g_perfCSV << frame << ","
+        g_perfCSV << totalFrames << ","
                   << fps << ","
                   << g_lastFrameTime_ms << ","
                   << metrics.kernUpdateVelocity_ms << ","

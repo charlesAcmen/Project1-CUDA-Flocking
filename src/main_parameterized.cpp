@@ -397,13 +397,13 @@ void mainLoop() {
             time = std::chrono::duration<double>(now - startPoint).count();
         }
 
-        if (time - timebase > 1.0) {
-            fps = frame / (time - timebase);
-            timebase = time;
-            frame = 0;
-        }
+        // FPS is computed after runCUDA() from the CUDA-event-measured frame time,
+        // which is far more accurate than wall-clock timing for GPU workloads.
 
         runCUDA();
+
+        // Compute FPS from CUDA-event-measured frame time (accurate GPU timing)
+        fps = (g_lastFrameTime_ms > 0.0f) ? (1000.0 / g_lastFrameTime_ms) : 0.0;
 
         // Get detailed performance metrics from kernel
         Boids::PerformanceMetrics metrics = Boids::getPerformanceMetrics();

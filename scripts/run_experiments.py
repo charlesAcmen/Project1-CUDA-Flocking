@@ -13,6 +13,8 @@ import sys
 import time
 from pathlib import Path
 import json
+import datetime
+import shutil
 
 # ================
 # Configuration
@@ -21,6 +23,9 @@ import json
 # Path to the parameterized executable (Release build)
 EXE_PATH = "../build/bin/Release/cis5650_boids_param.exe"
 RESULTS_DIR = "../results"
+
+TIMESTAMP = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+RUN_DIR = os.path.join(RESULTS_DIR, f"run_{TIMESTAMP}")
 
 ALL_METHODS = ["naive", "scattered", "coherent"]
 
@@ -34,7 +39,7 @@ EXPERIMENT_1_CONFIG = {
     "methods":          ALL_METHODS,
     "block_size":       128,
     "frames":           500,     # number of frames to average over
-    "visualize_options": [True, False]
+    "visualize":          False    # No visualization to avoid OpenGL observer effect
 }
 
 # Experiment 2: Vary block size for all three methods
@@ -53,6 +58,7 @@ EXPERIMENT_2_CONFIG = {
 
 def ensure_results_dir():
     Path(RESULTS_DIR).mkdir(parents=True, exist_ok=True)
+    Path(RUN_DIR).mkdir(parents=True, exist_ok=True)
 
 
 def run_simulation(n, block_size, method, visualize, frames, output_file, timeout=600):
@@ -128,49 +134,48 @@ def experiment_1_vary_n():
     results = []
 
     for method in config["methods"]:
-        for visualize in config["visualize_options"]:
-            vis_str = "vis" if visualize else "novis"
+        visualize = config["visualize"]  # Always False — no OpenGL observer effect
 
-            for n in config["n_values"]:
-                # Skip large N for naive (would take too long)
-                if method == "naive" and n > config["naive_max_n"]:
-                    print(f"\n  [SKIP] naive N={n} > naive_max_n={config['naive_max_n']}")
-                    continue
+        for n in config["n_values"]:
+            # Skip large N for naive (would take too long)
+            if method == "naive" and n > config["naive_max_n"]:
+                print(f"\n  [SKIP] naive N={n} > naive_max_n={config['naive_max_n']}")
+                continue
 
-                output_file = os.path.join(
-                    RESULTS_DIR,
-                    f"exp1_{method}_N{n}_B{config['block_size']}_{vis_str}.csv"
-                )
+            output_file = os.path.join(
+                RUN_DIR,
+                f"exp1_{method}_N{n}_B{config['block_size']}_novis.csv"
+            )
 
-                # Reduce frames for large N to keep runtime reasonable
-                frames = config["frames"]
-                if method == "naive" and n >= 10000:
-                    frames = 200
-                elif method == "naive" and n >= 5000:
-                    frames = 300
+            # Reduce frames for large N to keep runtime reasonable
+            frames = config["frames"]
+            if method == "naive" and n >= 10000:
+                frames = 200
+            elif method == "naive" and n >= 5000:
+                frames = 300
 
-                success, runtime = run_simulation(
-                    n=n,
-                    block_size=config["block_size"],
-                    method=method,
-                    visualize=visualize,
-                    frames=frames,
-                    output_file=output_file
-                )
+            success, runtime = run_simulation(
+                n=n,
+                block_size=config["block_size"],
+                method=method,
+                visualize=visualize,
+                frames=frames,
+                output_file=output_file
+            )
 
-                results.append({
-                    "experiment": "vary_n",
-                    "method": method,
-                    "n": n,
-                    "block_size": config["block_size"],
-                    "visualize": visualize,
-                    "frames": frames,
-                    "success": success,
-                    "runtime_seconds": runtime,
-                    "output_file": output_file
-                })
+            results.append({
+                "experiment": "vary_n",
+                "method": method,
+                "n": n,
+                "block_size": config["block_size"],
+                "visualize": visualize,
+                "frames": frames,
+                "success": success,
+                "runtime_seconds": runtime,
+                "output_file": output_file
+            })
 
-                time.sleep(1)  # Brief cool-down between runs
+            time.sleep(1)  # Brief cool-down between runs
 
     return results
 
@@ -190,7 +195,7 @@ def experiment_2_vary_blocksize():
     for method in config["methods"]:
         for block_size in config["block_sizes"]:
             output_file = os.path.join(
-                RESULTS_DIR,
+                RUN_DIR,
                 f"exp2_{method}_N{config['n']}_B{block_size}_novis.csv"
             )
 
@@ -225,10 +230,18 @@ def experiment_2_vary_blocksize():
 # ================
 
 def save_results_summary(all_results):
-    summary_file = os.path.join(RESULTS_DIR, "experiments_summary.json")
+    # Save inside the run directory
+    summary_file = os.path.join(RUN_DIR, "experiments_summary.json")
     with open(summary_file, 'w') as f:
         json.dump(all_results, f, indent=2)
-    print(f"\nSummary saved → {summary_file}")
+    print(f"\nSummary saved -> {summary_file}")
+
+    # Also copy to the root results directory
+    try:
+        root_summary = os.path.join(RESULTS_DIR, "experiments_summary.json")
+        shutil.copy(summary_file, root_summary)
+    except Exception as e:
+        print(f"Warning: Could not copy summary to root: {e}")
 
 
 def print_summary(all_results):
@@ -251,9 +264,9 @@ def print_summary(all_results):
     if exp1:
         print("\nExperiment 1 (Vary N) - by method:")
         for method in ALL_METHODS:
-            rows = [r for r in exp1 if r["method"] == method and not r["visualize"] and r["success"]]
+            rows = [r for r in exp1 if r["method"] == method and r["success"]]
             if rows:
-                print(f"\n  {method.upper()} (no-vis):")
+                print(f"\n  {method.upper()}:")
                 for r in sorted(rows, key=lambda x: x["n"]):
                     print(f"    N={r['n']:7d}  {r['runtime_seconds']:6.1f}s  -> {r['output_file']}")
 
@@ -273,7 +286,6 @@ def estimate_time(config1, config2):
     """Rough estimate of total experiment time in minutes."""
     runs_exp1 = sum(
         1 for m in config1["methods"]
-        for vis in config1["visualize_options"]
         for n in config1["n_values"]
         if not (m == "naive" and n > config1["naive_max_n"])
     )
@@ -302,17 +314,11 @@ def main():
     print(f"\nExperiment 1 (Vary N):          methods={EXPERIMENT_1_CONFIG['methods']}")
     print(f"  N values:  {EXPERIMENT_1_CONFIG['n_values']}")
     print(f"  naive cap: N <= {EXPERIMENT_1_CONFIG['naive_max_n']}")
-    print(f"  vis modes: {EXPERIMENT_1_CONFIG['visualize_options']}")
+    print(f"  visualize: OFF (no OpenGL observer effect)")
     print(f"\nExperiment 2 (Vary Block Size): methods={EXPERIMENT_2_CONFIG['methods']}")
     print(f"  N={EXPERIMENT_2_CONFIG['n']}, block sizes={EXPERIMENT_2_CONFIG['block_sizes']}")
     print(f"\nTotal estimated runs: ~{total_runs}")
     print(f"Estimated time:       {est_min:.0f}-{est_max:.0f} minutes\n")
-
-    # Skip interactive prompt for automation
-    # response = input("Continue? (y/n): ").strip().lower()
-    # if response != 'y':
-    #     print("Cancelled.")
-    #     sys.exit(0)
 
     all_results = []
     try:
@@ -327,10 +333,29 @@ def main():
 
     print("\n" + "="*72)
     print("Experiments complete!")
-    print(f"Results saved to: {RESULTS_DIR}/")
+    print(f"Results saved to subfolder -> {RUN_DIR}")
     print("="*72)
-    print("\nNext steps:")
-    print("  python analyze_experiments.py")
+
+    # Run the analysis script on the subfolder
+    print("\nRunning analysis on the results...")
+    try:
+        subprocess.run(["python", "analyze_experiments.py", RUN_DIR], check=True)
+        # Copy the generated analysis artifacts back to the root results folder
+        artifacts = [
+            'exp1_fps_vs_n.png',
+            'exp1_steptime_vs_n.png',
+            'exp1_comparison_bar.png',
+            'exp2_blocksize_analysis.png',
+            'analysis_report.txt'
+        ]
+        for art in artifacts:
+            src = os.path.join(RUN_DIR, art)
+            dst = os.path.join(RESULTS_DIR, art)
+            if os.path.exists(src):
+                shutil.copy(src, dst)
+        print("Analysis artifacts copied to the root results folder successfully!")
+    except Exception as e:
+        print(f"Error running analysis: {e}")
 
 
 if __name__ == '__main__':
