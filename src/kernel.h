@@ -1,7 +1,11 @@
 #pragma once
 
 namespace Boids {
+    // Primary init (uses compile-time blockSize=128)
     void initSimulation(int N);
+    // Parameterized init - allows runtime block size override
+    void initSimulation(int N, int blockSz);
+
     void stepSimulationNaive(float dt);
     void stepSimulationScatteredGrid(float dt);
     void stepSimulationCoherentGrid(float dt);
@@ -24,4 +28,9 @@ namespace Boids {
 
     void resetPerformanceMetrics();
     PerformanceMetrics getPerformanceMetrics();
+    int getBlockSize();
+
+    // Simulation method enum for unified dispatch
+    enum class SimulationMethod { NAIVE, SCATTERED_GRID, COHERENT_GRID };
+    void stepSimulation(SimulationMethod method, float dt);
 }

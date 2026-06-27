@@ -65,12 +65,21 @@ set(sources
     src/utilityCore.cpp
     )
 
+# Parameterized benchmark target (uses main_parameterized.cpp instead of main.cpp)
+set(sources_param
+    src/glslUtility.cpp
+    src/kernel.cu
+    src/main_parameterized.cpp
+    src/utilityCore.cpp
+    )
+
 list(SORT headers)
 list(SORT sources)
 
 source_group(Headers FILES ${headers})
 source_group(Sources FILES ${sources})
 
+# === Primary executable (interactive, compile-time config) ===
 add_executable(${CMAKE_PROJECT_NAME} ${sources} ${headers})
 target_link_libraries(${CMAKE_PROJECT_NAME} ${GL_LIBRARIES} CCCL::Thrust)
 if(CMAKE_VERSION VERSION_LESS "3.23.0")
@@ -85,6 +94,26 @@ set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT $
 
 add_custom_command(
     TARGET ${CMAKE_PROJECT_NAME}
+    PRE_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/shaders
+        ${CMAKE_BINARY_DIR}/shaders
+    )
+
+# === Parameterized benchmark executable (runtime config via command-line args) ===
+add_executable(${CMAKE_PROJECT_NAME}_param ${sources_param} ${headers})
+target_link_libraries(${CMAKE_PROJECT_NAME}_param ${GL_LIBRARIES} CCCL::Thrust)
+if(CMAKE_VERSION VERSION_LESS "3.23.0")
+    set_target_properties(${CMAKE_PROJECT_NAME}_param PROPERTIES CUDA_ARCHITECTURES OFF)
+elseif(CMAKE_VERSION VERSION_LESS "3.24.0")
+    set_target_properties(${CMAKE_PROJECT_NAME}_param PROPERTIES CUDA_ARCHITECTURES all-major)
+else()
+    set_target_properties(${CMAKE_PROJECT_NAME}_param PROPERTIES CUDA_ARCHITECTURES native)
+endif()
+target_compile_options(${CMAKE_PROJECT_NAME}_param PRIVATE "$<$<AND:$<CONFIG:Debug,RelWithDebInfo>,$<COMPILE_LANGUAGE:CUDA>>:-G>")
+
+add_custom_command(
+    TARGET ${CMAKE_PROJECT_NAME}_param
     PRE_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/shaders

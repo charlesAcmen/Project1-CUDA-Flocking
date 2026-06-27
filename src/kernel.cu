@@ -178,9 +178,16 @@ __global__ void kernGenerateRandomPosArray(int time, int N, glm::vec3 * arr, flo
 /**
 * Initialize memory, update some globals
 */
+void Boids::initSimulation(int N, int blockSz) {
+  // Set runtime block size before calling the main init
+  g_runtimeBlockSize = blockSz;
+  Boids::initSimulation(N);
+}
+
 void Boids::initSimulation(int N) {
   numObjects = N;
-  dim3 fullBlocksPerGrid((N + blockSize - 1) / blockSize);
+  int effBS = getEffectiveBlockSize();
+  dim3 fullBlocksPerGrid((N + effBS - 1) / effBS);
 
   // LOOK-1.2 - This is basic CUDA memory management and error checking.
   // Don't forget to cudaFree in  Boids::endSimulation.
@@ -463,7 +470,7 @@ __global__ void kernResetIntBuffer(int N, int *intBuffer, int value) {
 }
 
 __global__ void kernIdentifyCellStartEnd(int N, int *particleGridIndices,
-  int *gridCellStartIndices, int *gridCellEndIndices) {
+  int *gridCellStartIndices, int *gridCellEndIndices, int totalCellCount) {
   // TODO-2.1
   // Identify the start point of each cell in the gridIndices array.
   // This is basically a parallel unrolling of a loop that goes
@@ -476,8 +483,7 @@ __global__ void kernIdentifyCellStartEnd(int N, int *particleGridIndices,
   int currentCellIndex = particleGridIndices[index];
   
   // DEFENSIVE: Validate currentCellIndex to prevent out-of-bounds writes
-  // This should never happen if kernComputeIndices works correctly, but we check anyway
-  if (currentCellIndex < 0 || currentCellIndex >= gridCellCount) {
+  if (currentCellIndex < 0 || currentCellIndex >= totalCellCount) {
       return;  // Invalid cell index, skip
   }
 
@@ -815,17 +821,23 @@ __global__ void kernReshuffleData(int N, int *particleArrayIndices,
 * Step the entire N-body simulation by `dt` seconds.
 */
 void Boids::stepSimulationNaive(float dt) {
-  dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
+  int effBS = getEffectiveBlockSize();
+  dim3 fullBlocksPerGrid((numObjects + effBS - 1) / effBS);
 
-  float elapsedTime = 0.0f;
+  // Zero out grid-specific metrics (not used by naive)
+  g_perfMetrics.kernComputeIndices_ms = 0.0f;
+  g_perfMetrics.kernResetBuffer_ms = 0.0f;
+  g_perfMetrics.kernIdentifyCellStartEnd_ms = 0.0f;
+  g_perfMetrics.thrustSort_ms = 0.0f;
+  g_perfMetrics.kernReshuffleData_ms = 0.0f;
+
   //non-blocking cpu calling,returns immediately
-  //param:cudaEvent_t ,cudaStream_t
   //send a RECORD_EVENT hardware instruction to the stream.
   cudaEventRecord(perfEvent_start, 0);
 
   // Measure velocity update kernel
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdateVelocityBruteForce<<<fullBlocksPerGrid, blockSize>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
+  kernUpdateVelocityBruteForce<<<fullBlocksPerGrid, effBS>>>(numObjects, dev_pos, dev_vel1, dev_vel2);
   cudaEventRecord(perfEvent_kernelStop, 0);
   cudaEventSynchronize(perfEvent_kernelStop);
   cudaEventElapsedTime(&g_perfMetrics.kernUpdateVelocity_ms, perfEvent_kernelStart, perfEvent_kernelStop);
@@ -833,7 +845,7 @@ void Boids::stepSimulationNaive(float dt) {
 
   // Measure position update kernel
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_pos, dev_vel2);
+  kernUpdatePos<<<fullBlocksPerGrid, effBS>>>(numObjects, dt, dev_pos, dev_vel2);
   cudaEventRecord(perfEvent_kernelStop, 0);
   cudaEventSynchronize(perfEvent_kernelStop);
   cudaEventElapsedTime(&g_perfMetrics.kernUpdatePos_ms, perfEvent_kernelStart, perfEvent_kernelStop);
@@ -841,14 +853,9 @@ void Boids::stepSimulationNaive(float dt) {
 
   cudaEventRecord(perfEvent_stop, 0);
   //blocking cpu calling,cpu thread will be suspended by os
-  //now cuda driver is listening on hardware interrupt for the graphic card,once
-  //GPU hardware completes RECORD_EVENT instruction and writing back timestamp
-  //card will erupts a hardware interrupt to CPU,which is handled by driver,then
-  //os wakes up the suspended CPU thread
+  //card will erupt a hardware interrupt to CPU,which is handled by driver
   cudaEventSynchronize(perfEvent_stop);
-  //do the calculation,cudaErrorNotReady when end event has not been writen back
   cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
-
 
   //swap to update velocity
   glm::vec3 *temp = dev_vel1;
@@ -857,114 +864,18 @@ void Boids::stepSimulationNaive(float dt) {
 }
 
 void Boids::stepSimulationScatteredGrid(float dt) {
-  // TODO-2.1
-  // Uniform Grid Neighbor search using Thrust sort.
-  // In Parallel:
-  
+  int effBS = getEffectiveBlockSize();
+  dim3 fullBlocksPerGrid((numObjects + effBS - 1) / effBS);
+  dim3 gridBlocksPerGrid((gridCellCount + effBS - 1) / effBS);
 
-  
-  
-  dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
-  dim3 gridBlocksPerGrid((gridCellCount + blockSize - 1) / blockSize);
+  // Reset reshuffle metric (not used by scattered)
+  g_perfMetrics.kernReshuffleData_ms = 0.0f;
 
-  float elapsedTime = 0.0f;
   cudaEventRecord(perfEvent_start, 0);
 
-  // - label each particle with its array index as well as its grid index.
-  //   Use 2x width grids.s
   // 1. Compute grid indices for each particle
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernComputeIndices<<<fullBlocksPerGrid, blockSize>>>(
-      numObjects, gridSideCount, gridMinimum, gridInverseCellWidth,
-      dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
-  cudaEventRecord(perfEvent_kernelStop, 0);
-  cudaEventSynchronize(perfEvent_kernelStop);
-  checkCUDAErrorWithLine("kernComputeIndices failed!");
-
-  // - Unstable key sort using Thrust. A stable sort isn't necessary, but you
-  //   are welcome to do a performance comparison.
-  // 2. Sort particles by grid cell using thrust
-  thrust::sort_by_key(dev_thrust_particleGridIndices, 
-                      dev_thrust_particleGridIndices + numObjects,
-                      dev_thrust_particleArrayIndices);
-  checkCUDAErrorWithLine("thrust::sort_by_key failed!");
-
-  // 3. Reset grid cell start/end indices to sentinel value
-  kernResetIntBuffer<<<gridBlocksPerGrid, blockSize>>>(
-      gridCellCount, dev_gridCellStartIndices, -1);
-  kernResetIntBuffer<<<gridBlocksPerGrid, blockSize>>>(
-      gridCellCount, dev_gridCellEndIndices, -1);
-  checkCUDAErrorWithLine("kernResetIntBuffer failed!");
-
-  // - Naively unroll the loop for finding the start and end indices of each
-  //   cell's data pointers in the array of boid indices
-  // 4. Identify start and end of each cell in the sorted array
-  kernIdentifyCellStartEnd<<<fullBlocksPerGrid, blockSize>>>(
-      numObjects, dev_particleGridIndices,
-      dev_gridCellStartIndices, dev_gridCellEndIndices);
-  checkCUDAErrorWithLine("kernIdentifyCellStartEnd failed!");
-
-    // - Perform velocity updates using neighbor search
- 
-  // 5. Update velocities using scattered grid neighbor search
-  cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdateVelNeighborSearchScattered<<<fullBlocksPerGrid, blockSize>>>(
-      numObjects, gridSideCount, gridMinimum,
-      gridInverseCellWidth, gridCellWidth,
-      dev_gridCellStartIndices, dev_gridCellEndIndices,
-      dev_particleArrayIndices,
-      dev_pos, dev_vel1, dev_vel2);
-  cudaEventRecord(perfEvent_kernelStop, 0);
-  cudaEventSynchronize(perfEvent_kernelStop);
-  cudaEventElapsedTime(&g_perfMetrics.kernUpdateVelocity_ms, perfEvent_kernelStart, perfEvent_kernelStop);
-  checkCUDAErrorWithLine("kernUpdateVelNeighborSearchScattered failed!");
-
-   // - Update positions
-  // 6. Update positions
-  cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_pos, dev_vel2);
-  cudaEventRecord(perfEvent_kernelStop, 0);
-  cudaEventSynchronize(perfEvent_kernelStop);
-  cudaEventElapsedTime(&g_perfMetrics.kernUpdatePos_ms, perfEvent_kernelStart, perfEvent_kernelStop);
-  checkCUDAErrorWithLine("kernUpdatePos failed!");
-
-  cudaEventRecord(perfEvent_stop, 0);
-  cudaEventSynchronize(perfEvent_stop);
-  cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
-
-  // - Ping-pong buffers as needed
-  // 7. Ping-pong velocities
-  glm::vec3 *temp = dev_vel1;
-  dev_vel1 = dev_vel2;
-  dev_vel2 = temp;
-}
-
-void Boids::stepSimulationCoherentGrid(float dt) {
-  // TODO-2.3 - start by copying Boids::stepSimulationNaiveGrid
-  // Uniform Grid Neighbor search using Thrust sort on cell-coherent data.
-  // In Parallel:
-  // - Label each particle with its array index as well as its grid index.
-  //   Use 2x width grids
-  // - Unstable key sort using Thrust. A stable sort isn't necessary, but you
-  //   are welcome to do a performance comparison.
-  // - Naively unroll the loop for finding the start and end indices of each
-  //   cell's data pointers in the array of boid indices
-  // - BIG DIFFERENCE: use the rearranged array index buffer to reshuffle all
-  //   the particle data in the simulation array.
-  //   CONSIDER WHAT ADDITIONAL BUFFERS YOU NEED
-  // - Perform velocity updates using neighbor search
-  // - Update positions
-  // - Ping-pong buffers as needed. THIS MAY BE DIFFERENT FROM BEFORE.
-  
-  dim3 fullBlocksPerGrid((numObjects + blockSize - 1) / blockSize);
-  dim3 gridBlocksPerGrid((gridCellCount + blockSize - 1) / blockSize);
-
-  float elapsedTime = 0.0f;
-  cudaEventRecord(perfEvent_start, 0);
-
-  // 1. Compute grid indices for each particle (using original scattered positions)
-  cudaEventRecord(perfEvent_kernelStart, 0);
-  kernComputeIndices<<<fullBlocksPerGrid, blockSize>>>(
+  kernComputeIndices<<<fullBlocksPerGrid, effBS>>>(
       numObjects, gridSideCount, gridMinimum, gridInverseCellWidth,
       dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
   cudaEventRecord(perfEvent_kernelStop, 0);
@@ -984,9 +895,9 @@ void Boids::stepSimulationCoherentGrid(float dt) {
 
   // 3. Reset grid cell start/end indices to sentinel value
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernResetIntBuffer<<<gridBlocksPerGrid, blockSize>>>(
+  kernResetIntBuffer<<<gridBlocksPerGrid, effBS>>>(
       gridCellCount, dev_gridCellStartIndices, -1);
-  kernResetIntBuffer<<<gridBlocksPerGrid, blockSize>>>(
+  kernResetIntBuffer<<<gridBlocksPerGrid, effBS>>>(
       gridCellCount, dev_gridCellEndIndices, -1);
   cudaEventRecord(perfEvent_kernelStop, 0);
   cudaEventSynchronize(perfEvent_kernelStop);
@@ -995,17 +906,96 @@ void Boids::stepSimulationCoherentGrid(float dt) {
 
   // 4. Identify start and end of each cell in the sorted array
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernIdentifyCellStartEnd<<<fullBlocksPerGrid, blockSize>>>(
+  kernIdentifyCellStartEnd<<<fullBlocksPerGrid, effBS>>>(
       numObjects, dev_particleGridIndices,
-      dev_gridCellStartIndices, dev_gridCellEndIndices);
+      dev_gridCellStartIndices, dev_gridCellEndIndices, gridCellCount);
   cudaEventRecord(perfEvent_kernelStop, 0);
   cudaEventSynchronize(perfEvent_kernelStop);
   cudaEventElapsedTime(&g_perfMetrics.kernIdentifyCellStartEnd_ms, perfEvent_kernelStart, perfEvent_kernelStop);
   checkCUDAErrorWithLine("kernIdentifyCellStartEnd failed!");
 
-  // 5. COHERENT STEP: Reshuffle boid data to be coherent with sorted order
+  // 5. Update velocities using scattered grid neighbor search
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernReshuffleData<<<fullBlocksPerGrid, blockSize>>>(
+  kernUpdateVelNeighborSearchScattered<<<fullBlocksPerGrid, effBS>>>(
+      numObjects, gridSideCount, gridMinimum,
+      gridInverseCellWidth, gridCellWidth,
+      dev_gridCellStartIndices, dev_gridCellEndIndices,
+      dev_particleArrayIndices,
+      dev_pos, dev_vel1, dev_vel2);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernUpdateVelocity_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("kernUpdateVelNeighborSearchScattered failed!");
+
+  // 6. Update positions
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  kernUpdatePos<<<fullBlocksPerGrid, effBS>>>(numObjects, dt, dev_pos, dev_vel2);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernUpdatePos_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("kernUpdatePos failed!");
+
+  cudaEventRecord(perfEvent_stop, 0);
+  cudaEventSynchronize(perfEvent_stop);
+  cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
+
+  // 7. Ping-pong velocities
+  glm::vec3 *temp = dev_vel1;
+  dev_vel1 = dev_vel2;
+  dev_vel2 = temp;
+}
+
+void Boids::stepSimulationCoherentGrid(float dt) {
+  int effBS = getEffectiveBlockSize();
+  dim3 fullBlocksPerGrid((numObjects + effBS - 1) / effBS);
+  dim3 gridBlocksPerGrid((gridCellCount + effBS - 1) / effBS);
+
+  cudaEventRecord(perfEvent_start, 0);
+
+  // 1. Compute grid indices for each particle (using current dev_pos)
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  kernComputeIndices<<<fullBlocksPerGrid, effBS>>>(
+      numObjects, gridSideCount, gridMinimum, gridInverseCellWidth,
+      dev_pos, dev_particleArrayIndices, dev_particleGridIndices);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernComputeIndices_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("kernComputeIndices failed!");
+
+  // 2. Sort particles by grid cell using thrust
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  thrust::sort_by_key(dev_thrust_particleGridIndices, 
+                      dev_thrust_particleGridIndices + numObjects,
+                      dev_thrust_particleArrayIndices);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.thrustSort_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("thrust::sort_by_key failed!");
+
+  // 3. Reset grid cell start/end indices
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  kernResetIntBuffer<<<gridBlocksPerGrid, effBS>>>(
+      gridCellCount, dev_gridCellStartIndices, -1);
+  kernResetIntBuffer<<<gridBlocksPerGrid, effBS>>>(
+      gridCellCount, dev_gridCellEndIndices, -1);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernResetBuffer_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("kernResetIntBuffer failed!");
+
+  // 4. Identify start and end of each cell
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  kernIdentifyCellStartEnd<<<fullBlocksPerGrid, effBS>>>(
+      numObjects, dev_particleGridIndices,
+      dev_gridCellStartIndices, dev_gridCellEndIndices, gridCellCount);
+  cudaEventRecord(perfEvent_kernelStop, 0);
+  cudaEventSynchronize(perfEvent_kernelStop);
+  cudaEventElapsedTime(&g_perfMetrics.kernIdentifyCellStartEnd_ms, perfEvent_kernelStart, perfEvent_kernelStop);
+  checkCUDAErrorWithLine("kernIdentifyCellStartEnd failed!");
+
+  // 5. Reshuffle boid data to be coherent with sorted order
+  cudaEventRecord(perfEvent_kernelStart, 0);
+  kernReshuffleData<<<fullBlocksPerGrid, effBS>>>(
       numObjects, dev_particleArrayIndices,
       dev_pos, dev_vel1,
       dev_coherentPos, dev_coherentVel1);
@@ -1015,9 +1005,8 @@ void Boids::stepSimulationCoherentGrid(float dt) {
   checkCUDAErrorWithLine("kernReshuffleData failed!");
 
   // 6. Update velocities using coherent grid neighbor search
-  // Note: Reading from coherentVel1, writing to coherentVel2
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdateVelNeighborSearchCoherent<<<fullBlocksPerGrid, blockSize>>>(
+  kernUpdateVelNeighborSearchCoherent<<<fullBlocksPerGrid, effBS>>>(
       numObjects, gridSideCount, gridMinimum,
       gridInverseCellWidth, gridCellWidth,
       dev_gridCellStartIndices, dev_gridCellEndIndices,
@@ -1028,23 +1017,22 @@ void Boids::stepSimulationCoherentGrid(float dt) {
   checkCUDAErrorWithLine("kernUpdateVelNeighborSearchCoherent failed!");
 
   // 7. Update positions using coherent data
-  // Reading from coherentPos and coherentVel2, writing back to coherentPos
   cudaEventRecord(perfEvent_kernelStart, 0);
-  kernUpdatePos<<<fullBlocksPerGrid, blockSize>>>(numObjects, dt, dev_coherentPos, dev_coherentVel2);
+  kernUpdatePos<<<fullBlocksPerGrid, effBS>>>(numObjects, dt, dev_coherentPos, dev_coherentVel2);
   cudaEventRecord(perfEvent_kernelStop, 0);
   cudaEventSynchronize(perfEvent_kernelStop);
   cudaEventElapsedTime(&g_perfMetrics.kernUpdatePos_ms, perfEvent_kernelStart, perfEvent_kernelStop);
   checkCUDAErrorWithLine("kernUpdatePos failed!");
 
-  cudaEventRecord(perfEvent_stop, 0);
-  cudaEventSynchronize(perfEvent_stop);
-  cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
-
-  // 8. Copy coherent data back to main buffers for rendering
-  // This ensures visualization and next frame use updated data
+  // 8. Copy coherent data back to main buffers (for rendering & next frame)
+  //    This is included in totalStepTime as it is part of the full pipeline cost.
   cudaMemcpy(dev_pos, dev_coherentPos, numObjects * sizeof(glm::vec3), cudaMemcpyDeviceToDevice);
   cudaMemcpy(dev_vel1, dev_coherentVel2, numObjects * sizeof(glm::vec3), cudaMemcpyDeviceToDevice);
   checkCUDAErrorWithLine("cudaMemcpy coherent to main failed!");
+
+  cudaEventRecord(perfEvent_stop, 0);
+  cudaEventSynchronize(perfEvent_stop);
+  cudaEventElapsedTime(&g_perfMetrics.totalStepTime_ms, perfEvent_start, perfEvent_stop);
 
   // 9. Ping-pong coherent velocities for next iteration
   glm::vec3 *temp = dev_coherentVel1;

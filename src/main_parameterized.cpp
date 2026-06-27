@@ -15,6 +15,7 @@
 #include <iomanip>
 #include <string>
 #include <cstring>
+#include <chrono>
 
 #include <cuda_runtime.h>
 #include <cuda_gl_interop.h>
@@ -386,7 +387,15 @@ void mainLoop() {
 
         frame++;
         totalFrames++;
-        double time = glfwGetTime();
+        double time;
+        if (g_config.visualize) {
+            time = glfwGetTime();
+        } else {
+            // Use chrono for headless mode (GLFW not initialized)
+            static auto startPoint = std::chrono::steady_clock::now();
+            auto now = std::chrono::steady_clock::now();
+            time = std::chrono::duration<double>(now - startPoint).count();
+        }
 
         if (time - timebase > 1.0) {
             fps = frame / (time - timebase);
