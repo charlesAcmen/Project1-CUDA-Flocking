@@ -33,13 +33,13 @@ ALL_METHODS = ["naive", "scattered", "coherent"]
 # Use fewer frames for naive at high N to avoid excessive runtime
 EXPERIMENT_1_CONFIG = {
     "name": "vary_n",
-    # N values - cover a broad range. Naive is O(N^2) so cap at 50k
-    "n_values":         [1000, 2000, 5000, 10000, 20000, 50000, 100000],
+    # N values - cover a broad range up to 1,000,000 boids. Naive capped at 20k to avoid timeouts
+    "n_values":         [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000],
     "naive_max_n":      20000,   # naive only runs up to this N
     "methods":          ALL_METHODS,
     "block_size":       128,
     "frames":           500,     # number of frames to average over
-    "visualize":          False    # No visualization to avoid OpenGL observer effect
+    "visualize":        False    # No visualization to avoid OpenGL observer effect
 }
 
 # Experiment 2: Vary block size for all three methods
@@ -152,6 +152,10 @@ def experiment_1_vary_n():
             if method == "naive" and n >= 10000:
                 frames = 200
             elif method == "naive" and n >= 5000:
+                frames = 300
+            elif n >= 500000:
+                frames = 200
+            elif n >= 100000:
                 frames = 300
 
             success, runtime = run_simulation(

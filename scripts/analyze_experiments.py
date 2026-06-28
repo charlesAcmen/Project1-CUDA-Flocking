@@ -118,6 +118,7 @@ def load_experiment_2():
 def analyze_experiment_1(data):
     print("\n" + "="*70)
     print("EXPERIMENT 1: Effect of Boid Count (N)")
+    print("  Controlled Variable: Block Size = 128, Mode = Headless")
     print("="*70)
 
     for method in ALL_METHODS:
@@ -138,7 +139,8 @@ def analyze_experiment_1(data):
 def plot_experiment_1_fps(data):
     """FPS vs N for all three methods (no visualization)."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 7))
-    fig.suptitle('Experiment 1: FPS vs Boid Count (N) — No Visualization', fontsize=14, fontweight='bold')
+    fig.suptitle('Experiment 1: Frame Rate (FPS) vs Boid Count (N)', fontsize=14, fontweight='bold')
+    ax.set_title('Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', fontsize=11, style='italic', pad=10)
 
     for method in ALL_METHODS:
         ns = sorted(data[method][False].keys())
@@ -152,10 +154,9 @@ def plot_experiment_1_fps(data):
                 linewidth=2, markersize=8)
 
     ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-    ax.set_ylabel('FPS', fontweight='bold')
-    ax.set_title('FPS vs Boid Count', fontsize=12)
-    ax.legend()
-    ax.grid(alpha=0.3)
+    ax.set_ylabel('FPS (Frames Per Second)', fontweight='bold')
+    ax.legend(loc='upper right')
+    ax.grid(True, which="both", ls="--", alpha=0.3)
     ax.set_xscale('log')
     ax.set_yscale('log')
 
@@ -167,31 +168,59 @@ def plot_experiment_1_fps(data):
 
 
 def plot_experiment_1_kernel(data):
-    """Step time vs N for the no-vis case, all three methods."""
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle('Experiment 1: Step Time vs N (No Visualization)', fontsize=14, fontweight='bold')
+    """Step time vs N for the no-vis case, with aligned axes and controlled variables."""
+    fig = plt.figure(figsize=(16, 10))
+    fig.suptitle('Experiment 1: Simulation Step Execution Time vs Boid Count (N)', fontsize=15, fontweight='bold')
+    plt.figtext(0.5, 0.94, 'Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', 
+                ha='center', fontsize=11, style='italic')
 
-    for ax, method in zip(axes, ALL_METHODS):
+    # Top plot: Direct overlay of all 3 methods on identical axes
+    ax_top = plt.subplot2grid((2, 3), (0, 0), colspan=3)
+    for method in ALL_METHODS:
+        ns = sorted(data[method][False].keys())
+        if not ns:
+            continue
+        ms_vals = [data[method][False][n].get('mean_total_step_ms', 0) for n in ns]
+        ax_top.plot(ns, ms_vals, marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
+                    label=METHOD_LABELS[method], linewidth=2.5, markersize=8)
+
+    ax_top.set_title('Direct Method Comparison: Total Step Time vs N', fontsize=12, fontweight='bold')
+    ax_top.set_xlabel('Number of Boids (N)', fontweight='bold')
+    ax_top.set_ylabel('Total Step Time (ms)', fontweight='bold')
+    ax_top.set_xscale('log')
+    ax_top.set_yscale('log')
+    ax_top.legend(loc='upper left')
+    ax_top.grid(True, which="both", ls="--", alpha=0.3)
+
+    # Bottom 3 plots: Breakdown for each method sharing identical X and Y axes
+    first_ax = None
+    for i, method in enumerate(ALL_METHODS):
+        if first_ax is None:
+            ax_b = plt.subplot2grid((2, 3), (1, i))
+            first_ax = ax_b
+        else:
+            ax_b = plt.subplot2grid((2, 3), (1, i), sharex=first_ax, sharey=first_ax)
+
         ns_novis = sorted(data[method][False].keys())
         if not ns_novis:
-            ax.set_visible(False)
+            ax_b.set_visible(False)
             continue
         ms_vals = [data[method][False][n].get('mean_total_step_ms', 0) for n in ns_novis]
         vel_vals = [data[method][False][n].get('mean_kern_update_velocity_ms', 0) for n in ns_novis]
 
-        ax.plot(ns_novis, ms_vals, 'o-', color=METHOD_COLORS[method],
-                label='Total step', linewidth=2, markersize=8)
-        ax.plot(ns_novis, vel_vals, 's--', color=METHOD_COLORS[method],
-                alpha=0.6, label='Velocity kernel', linewidth=1.5, markersize=6)
-        ax.set_title(METHOD_LABELS[method], fontsize=12, fontweight='bold')
-        ax.set_xlabel('N', fontweight='bold')
-        ax.set_ylabel('Time (ms)', fontweight='bold')
-        ax.set_xscale('log')
-        ax.set_yscale('log')
-        ax.legend(fontsize=9)
-        ax.grid(alpha=0.3)
+        ax_b.plot(ns_novis, ms_vals, 'o-', color=METHOD_COLORS[method],
+                label='Total step', linewidth=2, markersize=7)
+        ax_b.plot(ns_novis, vel_vals, 's--', color=METHOD_COLORS[method],
+                alpha=0.6, label='Velocity kernel', linewidth=1.5, markersize=5)
+        ax_b.set_title(f'Breakdown: {METHOD_LABELS[method]}', fontsize=11, fontweight='bold')
+        ax_b.set_xlabel('Number of Boids (N)', fontweight='bold')
+        ax_b.set_ylabel('Time (ms)', fontweight='bold')
+        ax_b.set_xscale('log')
+        ax_b.set_yscale('log')
+        ax_b.legend(fontsize=9, loc='upper left')
+        ax_b.grid(True, which="both", ls="--", alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.93])
     out = str(Path(RESULTS_DIR) / 'exp1_steptime_vs_n.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f"  Saved: {out}")
@@ -201,7 +230,8 @@ def plot_experiment_1_kernel(data):
 def plot_experiment_1_comparison(data):
     """Side-by-side FPS comparison at common N values (no visualization)."""
     fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-    fig.suptitle('Experiment 1: Algorithm Comparison at Each N — No Visualization', fontsize=14, fontweight='bold')
+    fig.suptitle('Experiment 1: Algorithm FPS Comparison at Each N', fontsize=14, fontweight='bold')
+    ax.set_title('Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', fontsize=11, style='italic', pad=10)
 
     # Collect common N values across all methods
     all_ns = set()
@@ -221,11 +251,10 @@ def plot_experiment_1_comparison(data):
                color=METHOD_COLORS[method], alpha=0.85)
 
     ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-    ax.set_ylabel('FPS', fontweight='bold')
-    ax.set_title('Algorithm FPS Comparison at Each N', fontsize=12)
+    ax.set_ylabel('FPS (Frames Per Second)', fontweight='bold')
     ax.set_xticks(x + width)
     ax.set_xticklabels([str(n) for n in common_ns], rotation=30, ha='right')
-    ax.legend()
+    ax.legend(loc='upper right')
     ax.grid(axis='y', alpha=0.3)
     ax.set_yscale('log')
 
@@ -243,6 +272,7 @@ def plot_experiment_1_comparison(data):
 def analyze_experiment_2(data):
     print("\n" + "="*70)
     print("EXPERIMENT 2: Effect of Block Size")
+    print("  Controlled Variable: Boid Count N = 10,000, Mode = Headless")
     print("="*70)
 
     for method in ALL_METHODS:
@@ -266,7 +296,9 @@ def analyze_experiment_2(data):
 
 def plot_experiment_2(data):
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Experiment 2: Effect of Block Size on Performance', fontsize=14, fontweight='bold')
+    fig.suptitle('Experiment 2: Effect of Block Size on Performance', fontsize=15, fontweight='bold')
+    plt.figtext(0.5, 0.95, 'Controlled Variable: Boid Count N = 10,000, Mode = Headless (No Visualization)', 
+                ha='center', fontsize=11, style='italic')
 
     ax_time, ax_fps, ax_rel, ax_bar = axes[0][0], axes[0][1], axes[1][0], axes[1][1]
 
@@ -285,7 +317,7 @@ def plot_experiment_2(data):
     ax_time.set_title('Step Time vs Block Size', fontsize=12)
     ax_time.set_xscale('log', base=2)
     ax_time.legend()
-    ax_time.grid(alpha=0.3)
+    ax_time.grid(True, which="both", ls="--", alpha=0.3)
 
     # Panel 2: FPS vs block size
     for method in ALL_METHODS:
@@ -302,7 +334,7 @@ def plot_experiment_2(data):
     ax_fps.set_title('FPS vs Block Size', fontsize=12)
     ax_fps.set_xscale('log', base=2)
     ax_fps.legend()
-    ax_fps.grid(alpha=0.3)
+    ax_fps.grid(True, which="both", ls="--", alpha=0.3)
 
     # Panel 3: relative performance (normalized per method)
     for method in ALL_METHODS:
@@ -322,7 +354,7 @@ def plot_experiment_2(data):
     ax_rel.set_xscale('log', base=2)
     ax_rel.axhline(y=100, color='gray', linestyle='--', linewidth=1, alpha=0.7)
     ax_rel.legend()
-    ax_rel.grid(alpha=0.3)
+    ax_rel.grid(True, which="both", ls="--", alpha=0.3)
 
     # Panel 4: kernel breakdown at block_size=128 for all methods
     ref_bs = 128
@@ -358,7 +390,7 @@ def plot_experiment_2(data):
         ax_bar.legend(fontsize=8, loc='upper right')
         ax_bar.grid(axis='y', alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
     out = str(Path(RESULTS_DIR) / 'exp2_blocksize_analysis.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\n  Saved: {out}")
@@ -377,6 +409,7 @@ def generate_report(exp1_data, exp2_data):
     lines.append("="*70)
 
     lines.append("\nEXPERIMENT 1: Effect of Boid Count (N)")
+    lines.append("  Controlled Variable: Block Size = 128, Mode = Headless")
     lines.append("-"*70)
     for method in ALL_METHODS:
         lines.append(f"\n  {METHOD_LABELS[method]}:")
@@ -388,6 +421,7 @@ def generate_report(exp1_data, exp2_data):
             lines.append(f"    N={n:7d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
 
     lines.append("\n\nEXPERIMENT 2: Effect of Block Size")
+    lines.append("  Controlled Variable: Boid Count N = 10,000, Mode = Headless")
     lines.append("-"*70)
     for method in ALL_METHODS:
         lines.append(f"\n  {METHOD_LABELS[method]}:")
