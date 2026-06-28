@@ -205,6 +205,11 @@ void Boids::initSimulation(int N) {
     dev_pos, scene_scale);
   checkCUDAErrorWithLine("kernGenerateRandomPosArray failed!");
 
+  // Initialize velocities to zero to avoid random initial speeds
+  cudaMemset(dev_vel1, 0, N * sizeof(glm::vec3));
+  cudaMemset(dev_vel2, 0, N * sizeof(glm::vec3));
+  checkCUDAErrorWithLine("cudaMemset velocities failed!");
+
   // LOOK-2.1 computing grid params
   gridCellWidth = 2.0f * std::max(std::max(rule1Distance, rule2Distance), rule3Distance);
   int halfSideCount = (int)(scene_scale / gridCellWidth) + 1;
