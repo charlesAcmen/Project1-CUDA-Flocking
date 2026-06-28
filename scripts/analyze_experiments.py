@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """
-Analyze experiment results and generate comprehensive plots for all three methods:
-  - Naive brute-force
-  - Scattered uniform grid
-  - Coherent uniform grid
+CUDA Boids Performance Analysis — 3 Focused Experiments
+
+  Experiment 1: Algorithm Complexity & Scalability (Step Time vs N, Log-Log)
+  Experiment 2: Memory Coalescing Proof (Kernel Phase Breakdown, Stacked Bar)
+  Experiment 3: Hardware Execution Configuration (Step Time vs Block Size, Linear)
 """
 
 import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 import glob
 import json
@@ -23,9 +25,10 @@ if len(sys.argv) > 1:
     RESULTS_DIR = sys.argv[1]
 else:
     RESULTS_DIR = "../results"
+
 ALL_METHODS = ["naive", "scattered", "coherent"]
 METHOD_COLORS = {"naive": "#e74c3c", "scattered": "#3498db", "coherent": "#2ecc71"}
-METHOD_LABELS = {"naive": "Naive (O(N^2))", "scattered": "Scattered Grid", "coherent": "Coherent Grid"}
+METHOD_LABELS = {"naive": "Naive O(N^2)", "scattered": "Scattered Grid", "coherent": "Coherent Grid"}
 METHOD_MARKERS = {"naive": "o", "scattered": "s", "coherent": "^"}
 
 
@@ -34,10 +37,9 @@ METHOD_MARKERS = {"naive": "o", "scattered": "s", "coherent": "^"}
 # =====================================
 
 def load_csv(filepath):
-    """Load a single CSV, returning a DataFrame or None."""
+    """Load a single CSV, dropping the first 30 frames as warmup."""
     try:
         df = pd.read_csv(filepath)
-        # Drop first 30 frames as warmup
         return df.iloc[30:].reset_index(drop=True) if len(df) > 30 else df
     except Exception as e:
         print(f"  Error loading {filepath}: {e}")
@@ -45,7 +47,7 @@ def load_csv(filepath):
 
 
 def aggregate_stats(df):
-    """Return mean stats for a DataFrame."""
+    """Return mean/std stats for a DataFrame."""
     if df is None or len(df) == 0:
         return None
     cols = ['fps', 'frame_ms', 'total_step_ms',
@@ -61,45 +63,43 @@ def aggregate_stats(df):
 
 
 def load_experiment_1():
-    """Load all exp1_* CSV files, return nested dict: [method][vis][N] -> stats"""
+    """Load exp1_* CSVs -> nested dict: [method][N] -> stats"""
     pattern = str(Path(RESULTS_DIR) / "exp1_*.csv")
     files = glob.glob(pattern)
     print(f"\nFound {len(files)} Experiment-1 CSV files")
-
-    data = {m: {True: {}, False: {}} for m in ALL_METHODS}
-
+    data = {m: {} for m in ALL_METHODS}
     for fp in sorted(files):
-        stem = Path(fp).stem  # exp1_naive_N5000_B128_novis
+        stem = Path(fp).stem
         parts = stem.split('_')
         try:
             method = parts[1]
-            n = int(parts[2][1:])      # N5000 -> 5000
-            vis = parts[-1] == 'vis'   # vis / novis
+            n = int(parts[2][1:])
             df = load_csv(fp)
             stats = aggregate_stats(df)
             if stats and method in data:
-                data[method][vis][n] = stats
+                data[method][n] = stats
                 print(f"  Loaded: {stem}  (frames={len(df) if df is not None else 0})")
         except Exception as e:
             print(f"  Skip {stem}: {e}")
-
     return data
 
 
-def load_experiment_2():
-    """Load all exp2_* CSV files, return nested dict: [method][block_size] -> stats"""
-    pattern = str(Path(RESULTS_DIR) / "exp2_*.csv")
+def load_experiment_3():
+    """Load exp3_* (or legacy exp2_*) CSVs -> nested dict: [method][block_size] -> stats"""
+    # Try exp3_ first, fall back to exp2_ for backwards compat
+    pattern = str(Path(RESULTS_DIR) / "exp3_*.csv")
     files = glob.glob(pattern)
-    print(f"Found {len(files)} Experiment-2 CSV files")
-
+    if not files:
+        pattern = str(Path(RESULTS_DIR) / "exp2_*.csv")
+        files = glob.glob(pattern)
+    print(f"Found {len(files)} Experiment-3 CSV files")
     data = {m: {} for m in ALL_METHODS}
-
     for fp in sorted(files):
-        stem = Path(fp).stem  # exp2_coherent_N10000_B128_novis
+        stem = Path(fp).stem
         parts = stem.split('_')
         try:
             method = parts[1]
-            block_size = int(parts[3][1:])  # B128 -> 128
+            block_size = int(parts[3][1:])
             df = load_csv(fp)
             stats = aggregate_stats(df)
             if stats and method in data:
@@ -107,174 +107,229 @@ def load_experiment_2():
                 print(f"  Loaded: {stem}  (frames={len(df) if df is not None else 0})")
         except Exception as e:
             print(f"  Skip {stem}: {e}")
-
     return data
 
 
-# =====================================
-# Experiment 1 Analysis
-# =====================================
+# =====================================================================
+# Experiment 1: Algorithm Complexity & Scalability
+#   X = N (log), Y = Total Step Time ms (log), one line per algorithm
+# =====================================================================
 
 def analyze_experiment_1(data):
     print("\n" + "="*70)
-    print("EXPERIMENT 1: Effect of Boid Count (N)")
-    print("  Controlled Variable: Block Size = 128, Mode = Headless")
+    print("EXPERIMENT 1: Algorithm Complexity & Scalability")
+    print("  Control: Block Size = 128, Headless Mode")
     print("="*70)
-
     for method in ALL_METHODS:
-        print(f"\n  [{METHOD_LABELS[method]}]")
-        ns = sorted(data[method][False].keys())  # no-vis only
+        ns = sorted(data[method].keys())
         if not ns:
             continue
+        print(f"\n  [{METHOD_LABELS[method]}]")
         for n in ns:
-            s = data[method][False][n]
+            s = data[method][n]
             fps = s.get('mean_fps', 0)
             ms = s.get('mean_total_step_ms', 0)
-            print(f"    N={n:7d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
-
-    plot_experiment_1_fps(data)
-    plot_experiment_1_kernel(data)
+            print(f"    N={n:7d}  {fps:8.2f} FPS  {ms:10.3f} ms/step")
+    plot_experiment_1(data)
 
 
-def plot_experiment_1_fps(data):
-    """FPS vs N for all three methods (no visualization)."""
-    fig, ax = plt.subplots(1, 1, figsize=(10, 7))
-    fig.suptitle('Experiment 1: Frame Rate (FPS) vs Boid Count (N)', fontsize=14, fontweight='bold')
-    ax.set_title('Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', fontsize=11, style='italic', pad=10)
+def plot_experiment_1(data):
+    """Single clean Log-Log chart: Total Step Time vs N."""
+    fig, ax = plt.subplots(figsize=(10, 7))
+    fig.suptitle('Experiment 1: Algorithm Complexity & Scalability',
+                 fontsize=15, fontweight='bold')
+    ax.set_title('Control: Block Size = 128, Headless Mode',
+                 fontsize=11, style='italic', pad=8)
 
     for method in ALL_METHODS:
-        ns = sorted(data[method][False].keys())
+        ns = sorted(data[method].keys())
         if not ns:
             continue
-        fps_vals = [data[method][False][n].get('mean_fps', 0) for n in ns]
-        ax.plot(ns, fps_vals,
+        ms_vals = [data[method][n].get('mean_total_step_ms', 0) for n in ns]
+        ax.plot(ns, ms_vals,
                 marker=METHOD_MARKERS[method],
                 color=METHOD_COLORS[method],
                 label=METHOD_LABELS[method],
-                linewidth=2, markersize=8)
+                linewidth=2.5, markersize=8)
 
-    ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-    ax.set_ylabel('FPS (Frames Per Second)', fontweight='bold')
-    ax.legend(loc='upper right')
-    ax.grid(True, which="both", ls="--", alpha=0.3)
+    ax.set_xlabel('Number of Boids (N)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Step Time (ms)', fontsize=12, fontweight='bold')
     ax.set_xscale('log')
     ax.set_yscale('log')
+    ax.legend(loc='upper left', fontsize=11)
+    ax.grid(True, which="both", ls="--", alpha=0.3)
 
     plt.tight_layout()
-    out = str(Path(RESULTS_DIR) / 'exp1_fps_vs_n.png')
+    out = str(Path(RESULTS_DIR) / 'fig1_steptime_vs_n.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\n  Saved: {out}")
     plt.close()
 
 
-def plot_experiment_1_kernel(data):
-    """Step time vs N for the no-vis case, with aligned axes and controlled variables."""
-    fig = plt.figure(figsize=(16, 10))
-    fig.suptitle('Experiment 1: Simulation Step Execution Time vs Boid Count (N)', fontsize=15, fontweight='bold')
-    plt.figtext(0.5, 0.94, 'Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', 
-                ha='center', fontsize=11, style='italic')
+# =====================================================================
+# Experiment 2: Memory Coalescing Proof (Kernel Phase Breakdown)
+#   Stacked bar chart at a representative large N, Block Size = 128
+# =====================================================================
 
-    # Top plot: Direct overlay of all 3 methods on identical axes
-    ax_top = plt.subplot2grid((2, 3), (0, 0), colspan=3)
-    for method in ALL_METHODS:
-        ns = sorted(data[method][False].keys())
-        if not ns:
-            continue
-        ms_vals = [data[method][False][n].get('mean_total_step_ms', 0) for n in ns]
-        ax_top.plot(ns, ms_vals, marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
-                    label=METHOD_LABELS[method], linewidth=2.5, markersize=8)
-
-    ax_top.set_title('Direct Method Comparison: Total Step Time vs N', fontsize=12, fontweight='bold')
-    ax_top.set_xlabel('Number of Boids (N)', fontweight='bold')
-    ax_top.set_ylabel('Total Step Time (ms)', fontweight='bold')
-    ax_top.set_xscale('log')
-    ax_top.set_yscale('log')
-    ax_top.legend(loc='upper left')
-    ax_top.grid(True, which="both", ls="--", alpha=0.3)
-
-    # Bottom 3 plots: Breakdown for each method sharing identical X and Y axes
-    first_ax = None
-    for i, method in enumerate(ALL_METHODS):
-        if first_ax is None:
-            ax_b = plt.subplot2grid((2, 3), (1, i))
-            first_ax = ax_b
-        else:
-            ax_b = plt.subplot2grid((2, 3), (1, i), sharex=first_ax, sharey=first_ax)
-
-        ns_novis = sorted(data[method][False].keys())
-        if not ns_novis:
-            ax_b.set_visible(False)
-            continue
-        ms_vals = [data[method][False][n].get('mean_total_step_ms', 0) for n in ns_novis]
-        vel_vals = [data[method][False][n].get('mean_kern_update_velocity_ms', 0) for n in ns_novis]
-
-        ax_b.plot(ns_novis, ms_vals, 'o-', color=METHOD_COLORS[method],
-                label='Total step', linewidth=2, markersize=7)
-        ax_b.plot(ns_novis, vel_vals, 's--', color=METHOD_COLORS[method],
-                alpha=0.6, label='Velocity kernel', linewidth=1.5, markersize=5)
-        ax_b.set_title(f'Breakdown: {METHOD_LABELS[method]}', fontsize=11, fontweight='bold')
-        ax_b.set_xlabel('Number of Boids (N)', fontweight='bold')
-        ax_b.set_ylabel('Time (ms)', fontweight='bold')
-        ax_b.set_xscale('log')
-        ax_b.set_yscale('log')
-        ax_b.legend(fontsize=9, loc='upper left')
-        ax_b.grid(True, which="both", ls="--", alpha=0.3)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.93])
-    out = str(Path(RESULTS_DIR) / 'exp1_steptime_vs_n.png')
-    plt.savefig(out, dpi=150, bbox_inches='tight')
-    print(f"  Saved: {out}")
-    plt.close()
-
-
-def plot_experiment_1_comparison(data):
-    """Side-by-side FPS comparison at common N values (no visualization)."""
-    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
-    fig.suptitle('Experiment 1: Algorithm FPS Comparison at Each N', fontsize=14, fontweight='bold')
-    ax.set_title('Controlled Variable: Block Size = 128, Mode = Headless (No Visualization)', fontsize=11, style='italic', pad=10)
-
-    # Collect common N values across all methods
-    all_ns = set()
-    for m in ALL_METHODS:
-        all_ns.update(data[m][False].keys())
-    common_ns = sorted(all_ns)
+def analyze_experiment_2(exp1_data):
+    """
+    Extract kernel breakdown from Experiment 1 data at the largest common N
+    where all three methods have data, to prove memory coalescing benefit.
+    """
+    # Find the largest N where all 3 methods have data
+    common_ns = set(exp1_data["naive"].keys()) & set(exp1_data["scattered"].keys()) & set(exp1_data["coherent"].keys())
     if not common_ns:
-        plt.close()
+        # Fall back: use largest N where at least scattered + coherent exist
+        common_ns = set(exp1_data["scattered"].keys()) & set(exp1_data["coherent"].keys())
+    if not common_ns:
+        print("\n  No common N values found for kernel breakdown. Skipping Experiment 2.")
         return
 
-    x = np.arange(len(common_ns))
-    width = 0.25
-    for i, method in enumerate(ALL_METHODS):
-        fps_vals = [data[method][False].get(n, {}).get('mean_fps', 0) for n in common_ns]
-        ax.bar(x + i * width, fps_vals, width,
-               label=METHOD_LABELS[method],
-               color=METHOD_COLORS[method], alpha=0.85)
+    target_n = max(common_ns)
 
-    ax.set_xlabel('Number of Boids (N)', fontweight='bold')
-    ax.set_ylabel('FPS (Frames Per Second)', fontweight='bold')
-    ax.set_xticks(x + width)
-    ax.set_xticklabels([str(n) for n in common_ns], rotation=30, ha='right')
-    ax.legend(loc='upper right')
-    ax.grid(axis='y', alpha=0.3)
-    ax.set_yscale('log')
+    # Also gather a secondary N for multi-scale comparison
+    large_ns = sorted([n for n in (set(exp1_data["scattered"].keys()) & set(exp1_data["coherent"].keys())) if n > target_n], reverse=False)
+
+    print("\n" + "="*70)
+    print(f"EXPERIMENT 2: Kernel Phase Breakdown (Memory Coalescing Proof)")
+    print(f"  Control: Block Size = 128, Headless Mode")
+    print(f"  Representative N = {target_n:,}")
+    print("="*70)
+
+    # Print detailed breakdown
+    kernel_cols = {
+        'Velocity Update': 'mean_kern_update_velocity_ms',
+        'Position Update': 'mean_kern_update_pos_ms',
+        'Compute Indices': 'mean_kern_compute_indices_ms',
+        'Reset Buffers':   'mean_kern_reset_buffer_ms',
+        'Identify Cells':  'mean_kern_identify_cell_ms',
+        'Thrust Sort':     'mean_thrust_sort_ms',
+        'Reshuffle Data':  'mean_kern_reshuffle_ms',
+    }
+
+    methods_at_n = [m for m in ALL_METHODS if target_n in exp1_data[m]]
+    for method in methods_at_n:
+        s = exp1_data[method][target_n]
+        total = s.get('mean_total_step_ms', 0)
+        print(f"\n  [{METHOD_LABELS[method]}]  Total = {total:.3f} ms")
+        for kname, col in kernel_cols.items():
+            val = s.get(col, 0)
+            pct = (val / total * 100) if total > 0 else 0
+            print(f"    {kname:20s}  {val:8.4f} ms  ({pct:5.1f}%)")
+
+    # Also print for larger Ns (scattered vs coherent only) if available
+    if large_ns:
+        extra_n = large_ns[-1]  # largest available
+        print(f"\n  --- Additional scale: N = {extra_n:,} (Grid methods only) ---")
+        for method in ["scattered", "coherent"]:
+            if extra_n in exp1_data[method]:
+                s = exp1_data[method][extra_n]
+                total = s.get('mean_total_step_ms', 0)
+                print(f"\n  [{METHOD_LABELS[method]}]  Total = {total:.3f} ms")
+                for kname, col in kernel_cols.items():
+                    val = s.get(col, 0)
+                    pct = (val / total * 100) if total > 0 else 0
+                    print(f"    {kname:20s}  {val:8.4f} ms  ({pct:5.1f}%)")
+
+    plot_experiment_2(exp1_data, target_n, large_ns)
+
+
+def plot_experiment_2(exp1_data, target_n, extra_ns):
+    """Stacked bar chart showing kernel phase breakdown."""
+    kernel_phases = [
+        ('Velocity Update',  'mean_kern_update_velocity_ms',  '#e74c3c'),
+        ('Thrust Sort',      'mean_thrust_sort_ms',           '#f39c12'),
+        ('Reshuffle Data',   'mean_kern_reshuffle_ms',        '#9b59b6'),
+        ('Compute Indices',  'mean_kern_compute_indices_ms',  '#3498db'),
+        ('Identify Cells',   'mean_kern_identify_cell_ms',    '#1abc9c'),
+        ('Reset Buffers',    'mean_kern_reset_buffer_ms',     '#95a5a6'),
+        ('Position Update',  'mean_kern_update_pos_ms',       '#2ecc71'),
+    ]
+
+    # Determine which N values to show
+    # Always show the largest common N (all 3 methods)
+    # Optionally show 1-2 larger Ns for grid-only comparison
+    chart_groups = []  # list of (label, [methods_with_data])
+
+    methods_at_target = [m for m in ALL_METHODS if target_n in exp1_data[m]]
+    chart_groups.append((f"N={target_n:,}", target_n, methods_at_target))
+
+    # Add larger scales where scattered+coherent both exist
+    grid_extra = [n for n in extra_ns if n in exp1_data["scattered"] and n in exp1_data["coherent"]]
+    # Pick up to 2 representative larger Ns
+    if grid_extra:
+        picks = []
+        if len(grid_extra) >= 2:
+            picks = [grid_extra[len(grid_extra)//2], grid_extra[-1]]
+        else:
+            picks = grid_extra[:1]
+        for n in picks:
+            methods_here = [m for m in ALL_METHODS if n in exp1_data[m]]
+            chart_groups.append((f"N={n:,}", n, methods_here))
+
+    # Build bar labels and data
+    bar_labels = []
+    bar_data = []   # each entry: dict of kernel_col -> value
+    for group_label, n_val, methods in chart_groups:
+        for method in methods:
+            bar_labels.append(f"{METHOD_LABELS[method]}\n({group_label})")
+            bar_data.append(exp1_data[method][n_val])
+
+    n_bars = len(bar_labels)
+    if n_bars == 0:
+        return
+
+    fig, ax = plt.subplots(figsize=(max(10, n_bars * 1.8), 7))
+    fig.suptitle('Experiment 2: Kernel Phase Breakdown — Memory Coalescing Proof',
+                 fontsize=14, fontweight='bold')
+    ax.set_title('Control: Block Size = 128, Headless Mode',
+                 fontsize=11, style='italic', pad=8)
+
+    x = np.arange(n_bars)
+    bottoms = np.zeros(n_bars)
+
+    for kname, col, color in kernel_phases:
+        vals = np.array([d.get(col, 0) for d in bar_data])
+        bars = ax.bar(x, vals, width=0.55, bottom=bottoms,
+                      label=kname, color=color, alpha=0.88, edgecolor='white', linewidth=0.5)
+        # Annotate dominant phases (> 15% of total)
+        for i, (v, b) in enumerate(zip(vals, bottoms)):
+            total = bar_data[i].get('mean_total_step_ms', 1)
+            pct = v / total * 100 if total > 0 else 0
+            if pct > 15 and v > 0.01:
+                ax.text(x[i], b + v / 2, f'{v:.2f}ms\n({pct:.0f}%)',
+                        ha='center', va='center', fontsize=7.5, fontweight='bold', color='white')
+        bottoms += vals
+
+    # Add total labels on top
+    for i, total_h in enumerate(bottoms):
+        ax.text(x[i], total_h + total_h * 0.02, f'{total_h:.2f} ms',
+                ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+    ax.set_xlabel('Algorithm & Scale', fontsize=11, fontweight='bold')
+    ax.set_ylabel('Time (ms)', fontsize=11, fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(bar_labels, fontsize=9, ha='center')
+    ax.legend(loc='upper left', fontsize=9, framealpha=0.9)
+    ax.grid(axis='y', alpha=0.3, ls='--')
 
     plt.tight_layout()
-    out = str(Path(RESULTS_DIR) / 'exp1_comparison_bar.png')
+    out = str(Path(RESULTS_DIR) / 'fig2_kernel_breakdown.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
-    print(f"  Saved: {out}")
+    print(f"\n  Saved: {out}")
     plt.close()
 
 
-# =====================================
-# Experiment 2 Analysis
-# =====================================
+# =====================================================================
+# Experiment 3: Hardware Execution Configuration (Step Time vs Block Size)
+#   X = Block Size (linear), Y = Total Step Time ms, one line per algo
+# =====================================================================
 
-def analyze_experiment_2(data):
+def analyze_experiment_3(data):
     print("\n" + "="*70)
-    print("EXPERIMENT 2: Effect of Block Size")
-    print("  Controlled Variable: Boid Count N = 10,000, Mode = Headless")
+    print("EXPERIMENT 3: Hardware Execution Configuration (Block Size)")
+    print("  Control: N = 10,000, Headless Mode")
     print("="*70)
-
     for method in ALL_METHODS:
         bss = sorted(data[method].keys())
         if not bss:
@@ -286,168 +341,111 @@ def analyze_experiment_2(data):
             ms = s.get('mean_total_step_ms', 0)
             std = s.get('std_total_step_ms', 0)
             print(f"    B={bs:4d}  {fps:8.2f} FPS  {ms:8.3f} +/- {std:6.3f} ms")
-
         if bss:
             best_bs = min(bss, key=lambda b: data[method][b].get('mean_total_step_ms', float('inf')))
-            print(f"    -> Best block size: {best_bs}")
+            print(f"    -> Optimal block size: {best_bs}")
+    plot_experiment_3(data)
 
-    plot_experiment_2(data)
 
+def plot_experiment_3(data):
+    """Single clean linear-scale chart: Total Step Time vs Block Size."""
+    fig, ax = plt.subplots(figsize=(10, 7))
+    fig.suptitle('Experiment 3: Performance vs Block Size',
+                 fontsize=15, fontweight='bold')
+    ax.set_title('Control: N = 10,000, Headless Mode',
+                 fontsize=11, style='italic', pad=8)
 
-def plot_experiment_2(data):
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    fig.suptitle('Experiment 2: Effect of Block Size on Performance', fontsize=15, fontweight='bold')
-    plt.figtext(0.5, 0.95, 'Controlled Variable: Boid Count N = 10,000, Mode = Headless (No Visualization)', 
-                ha='center', fontsize=11, style='italic')
-
-    ax_time, ax_speedup, ax_rel, ax_bar = axes[0][0], axes[0][1], axes[1][0], axes[1][1]
-
-    # Panel 1: Step Time (ms) vs Block Size
     for method in ALL_METHODS:
         bss = sorted(data[method].keys())
         if not bss:
             continue
         ms_vals = [data[method][bs].get('mean_total_step_ms', 0) for bs in bss]
-        ax_time.plot(bss, ms_vals,
-                     marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
-                     label=METHOD_LABELS[method], linewidth=2, markersize=8)
+        std_vals = [data[method][bs].get('std_total_step_ms', 0) for bs in bss]
+        ax.errorbar(bss, ms_vals, yerr=std_vals,
+                    marker=METHOD_MARKERS[method],
+                    color=METHOD_COLORS[method],
+                    label=METHOD_LABELS[method],
+                    linewidth=2.5, markersize=8, capsize=4, capthick=1.5)
 
-    ax_time.set_xlabel('Block Size', fontweight='bold')
-    ax_time.set_ylabel('Total Step Time (ms)', fontweight='bold')
-    ax_time.set_title('Absolute Step Time vs Block Size', fontsize=12, fontweight='bold')
-    ax_time.set_xscale('log', base=2)
-    ax_time.set_xticks([32, 64, 128, 256, 512, 1024])
-    ax_time.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_time.legend(loc='upper left')
-    ax_time.grid(True, which="both", ls="--", alpha=0.3)
+    ax.set_xlabel('Block Size (threads per block)', fontsize=12, fontweight='bold')
+    ax.set_ylabel('Total Step Time (ms)', fontsize=12, fontweight='bold')
+    # Linear X axis with explicit tick labels
+    ax.set_xticks([32, 64, 128, 256, 512, 1024])
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+    ax.legend(loc='upper left', fontsize=11)
+    ax.grid(True, which="both", ls="--", alpha=0.3)
 
-    # Panel 2: Speedup relative to Naive at each Block Size
-    naive_bss = data.get("naive", {})
-    for method in ALL_METHODS:
-        if method == "naive":
-            continue
-        bss = sorted(data[method].keys())
-        if not bss:
-            continue
-        speedups = []
-        valid_bss = []
-        for bs in bss:
-            n_time = naive_bss.get(bs, {}).get('mean_total_step_ms', 0)
-            m_time = data[method][bs].get('mean_total_step_ms', 0)
-            if n_time > 0 and m_time > 0:
-                speedups.append(n_time / m_time)
-                valid_bss.append(bs)
-        ax_speedup.plot(valid_bss, speedups,
-                        marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
-                        label=METHOD_LABELS[method], linewidth=2, markersize=8)
-
-    ax_speedup.set_xlabel('Block Size', fontweight='bold')
-    ax_speedup.set_ylabel('Speedup (vs Naive at same BS)', fontweight='bold')
-    ax_speedup.set_title('Speedup over Naive vs Block Size', fontsize=12, fontweight='bold')
-    ax_speedup.set_xscale('log', base=2)
-    ax_speedup.set_xticks([32, 64, 128, 256, 512, 1024])
-    ax_speedup.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_speedup.legend(loc='upper right')
-    ax_speedup.grid(True, which="both", ls="--", alpha=0.3)
-
-    # Panel 3: Internal Sensitivity (% of method's own best performance)
-    for method in ALL_METHODS:
-        bss = sorted(data[method].keys())
-        if not bss:
-            continue
-        ms_vals = [data[method][bs].get('mean_total_step_ms', float('inf')) for bs in bss]
-        best = min(v for v in ms_vals if v > 0)
-        rel = [best / v * 100 for v in ms_vals]
-        ax_rel.plot(bss, rel,
-                    marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
-                    label=METHOD_LABELS[method], linewidth=2, markersize=8)
-
-    ax_rel.set_xlabel('Block Size', fontweight='bold')
-    ax_rel.set_ylabel('Sensitivity (% of Method\'s Best)', fontweight='bold')
-    ax_rel.set_title('Internal Block Size Sensitivity (Self-Normalized)', fontsize=12, fontweight='bold')
-    ax_rel.set_xscale('log', base=2)
-    ax_rel.set_xticks([32, 64, 128, 256, 512, 1024])
-    ax_rel.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-    ax_rel.axhline(y=100, color='gray', linestyle='--', linewidth=1, alpha=0.7)
-    ax_rel.legend(loc='lower left')
-    ax_rel.grid(True, which="both", ls="--", alpha=0.3)
-
-    # Panel 4: kernel breakdown at block_size=128 for all methods
-    ref_bs = 128
-    methods_with_data = [m for m in ALL_METHODS if ref_bs in data[m]]
-    if methods_with_data:
-        kernel_names = ['vel_update', 'pos_update', 'compute_idx', 'reset_buf',
-                        'identify_cell', 'thrust_sort', 'reshuffle']
-        col_map = {
-            'vel_update':    'mean_kern_update_velocity_ms',
-            'pos_update':    'mean_kern_update_pos_ms',
-            'compute_idx':   'mean_kern_compute_indices_ms',
-            'reset_buf':     'mean_kern_reset_buffer_ms',
-            'identify_cell': 'mean_kern_identify_cell_ms',
-            'thrust_sort':   'mean_thrust_sort_ms',
-            'reshuffle':     'mean_kern_reshuffle_ms',
-        }
-        x = np.arange(len(methods_with_data))
-        bar_colors = plt.cm.tab10(np.linspace(0, 0.9, len(kernel_names)))
-
-        bottoms = np.zeros(len(methods_with_data))
-        for ki, (kname, col) in enumerate(col_map.items()):
-            vals = [data[m][ref_bs].get(col, 0) for m in methods_with_data]
-            ax_bar.bar(x, vals, width=0.5, bottom=bottoms,
-                       label=kname, color=bar_colors[ki], alpha=0.85)
-            bottoms += np.array(vals)
-
-        ax_bar.set_xlabel('Method', fontweight='bold')
-        ax_bar.set_ylabel('Time (ms)', fontweight='bold')
-        ax_bar.set_title(f'Kernel Phase Breakdown at BlockSize={ref_bs}', fontsize=12, fontweight='bold')
-        ax_bar.set_xticks(x)
-        ax_bar.set_xticklabels([METHOD_LABELS[m] for m in methods_with_data], rotation=10)
-        ax_bar.legend(fontsize=8, loc='upper right')
-        ax_bar.grid(axis='y', alpha=0.3)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.94])
-    out = str(Path(RESULTS_DIR) / 'exp2_blocksize_analysis.png')
+    plt.tight_layout()
+    out = str(Path(RESULTS_DIR) / 'fig3_steptime_vs_blocksize.png')
     plt.savefig(out, dpi=150, bbox_inches='tight')
     print(f"\n  Saved: {out}")
     plt.close()
 
 
-# =====================================
+# =====================================================================
 # Summary Report
-# =====================================
+# =====================================================================
 
-def generate_report(exp1_data, exp2_data):
+def generate_report(exp1_data, exp3_data):
     report_file = str(Path(RESULTS_DIR) / 'analysis_report.txt')
     lines = []
     lines.append("="*70)
     lines.append("CUDA BOIDS PERFORMANCE ANALYSIS REPORT")
     lines.append("="*70)
 
-    lines.append("\nEXPERIMENT 1: Effect of Boid Count (N)")
-    lines.append("  Controlled Variable: Block Size = 128, Mode = Headless")
+    # Experiment 1
+    lines.append("\nEXPERIMENT 1: Algorithm Complexity & Scalability")
+    lines.append("  Control: Block Size = 128, Headless Mode")
     lines.append("-"*70)
     for method in ALL_METHODS:
         lines.append(f"\n  {METHOD_LABELS[method]}:")
-        ns = sorted(exp1_data[method][False].keys())  # no-vis
+        ns = sorted(exp1_data[method].keys())
         for n in ns:
-            s = exp1_data[method][False][n]
+            s = exp1_data[method][n]
             fps = s.get('mean_fps', 0)
             ms = s.get('mean_total_step_ms', 0)
-            lines.append(f"    N={n:7d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
+            lines.append(f"    N={n:7d}  {fps:8.2f} FPS  {ms:10.3f} ms/step")
 
-    lines.append("\n\nEXPERIMENT 2: Effect of Block Size")
-    lines.append("  Controlled Variable: Boid Count N = 10,000, Mode = Headless")
+    # Experiment 2 (kernel breakdown from exp1 data)
+    common_ns = set(exp1_data["naive"].keys()) & set(exp1_data["scattered"].keys()) & set(exp1_data["coherent"].keys())
+    if common_ns:
+        target_n = max(common_ns)
+        kernel_cols = {
+            'Velocity Update': 'mean_kern_update_velocity_ms',
+            'Position Update': 'mean_kern_update_pos_ms',
+            'Compute Indices': 'mean_kern_compute_indices_ms',
+            'Reset Buffers':   'mean_kern_reset_buffer_ms',
+            'Identify Cells':  'mean_kern_identify_cell_ms',
+            'Thrust Sort':     'mean_thrust_sort_ms',
+            'Reshuffle Data':  'mean_kern_reshuffle_ms',
+        }
+        lines.append(f"\n\nEXPERIMENT 2: Kernel Phase Breakdown (Memory Coalescing Proof)")
+        lines.append(f"  Control: Block Size = 128, N = {target_n:,}, Headless Mode")
+        lines.append("-"*70)
+        methods_at_n = [m for m in ALL_METHODS if target_n in exp1_data[m]]
+        for method in methods_at_n:
+            s = exp1_data[method][target_n]
+            total = s.get('mean_total_step_ms', 0)
+            lines.append(f"\n  {METHOD_LABELS[method]}:  Total = {total:.3f} ms")
+            for kname, col in kernel_cols.items():
+                val = s.get(col, 0)
+                pct = (val / total * 100) if total > 0 else 0
+                lines.append(f"    {kname:20s}  {val:8.4f} ms  ({pct:5.1f}%)")
+
+    # Experiment 3
+    lines.append("\n\nEXPERIMENT 3: Performance vs Block Size")
+    lines.append("  Control: N = 10,000, Headless Mode")
     lines.append("-"*70)
     for method in ALL_METHODS:
         lines.append(f"\n  {METHOD_LABELS[method]}:")
-        bss = sorted(exp2_data[method].keys())
+        bss = sorted(exp3_data[method].keys())
         for bs in bss:
-            s = exp2_data[method][bs]
+            s = exp3_data[method][bs]
             fps = s.get('mean_fps', 0)
             ms = s.get('mean_total_step_ms', 0)
             lines.append(f"    B={bs:4d}  {fps:8.2f} FPS  {ms:8.3f} ms/step")
         if bss:
-            best = min(bss, key=lambda b: exp2_data[method][b].get('mean_total_step_ms', float('inf')))
+            best = min(bss, key=lambda b: exp3_data[method][b].get('mean_total_step_ms', float('inf')))
             lines.append(f"    Optimal block size: {best}")
 
     with open(report_file, 'w') as f:
@@ -465,24 +463,24 @@ def main():
     print("="*70)
 
     exp1_data = load_experiment_1()
-    exp2_data = load_experiment_2()
+    exp3_data = load_experiment_3()
 
-    has_exp1 = any(exp1_data[m][v] for m in ALL_METHODS for v in [True, False])
-    has_exp2 = any(exp2_data[m] for m in ALL_METHODS)
+    has_exp1 = any(exp1_data[m] for m in ALL_METHODS)
+    has_exp3 = any(exp3_data[m] for m in ALL_METHODS)
 
     if has_exp1:
         analyze_experiment_1(exp1_data)
-        plot_experiment_1_comparison(exp1_data)
+        analyze_experiment_2(exp1_data)  # Kernel breakdown extracted from exp1 data
     else:
         print("\nNo Experiment 1 data found.")
 
-    if has_exp2:
-        analyze_experiment_2(exp2_data)
+    if has_exp3:
+        analyze_experiment_3(exp3_data)
     else:
-        print("\nNo Experiment 2 data found.")
+        print("\nNo Experiment 3 data found.")
 
-    if has_exp1 or has_exp2:
-        generate_report(exp1_data, exp2_data)
+    if has_exp1 or has_exp3:
+        generate_report(exp1_data, exp3_data)
 
     print("\n" + "="*70)
     print(f"Analysis complete! Results in: {RESULTS_DIR}/")
