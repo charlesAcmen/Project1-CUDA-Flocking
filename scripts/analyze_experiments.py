@@ -300,9 +300,9 @@ def plot_experiment_2(data):
     plt.figtext(0.5, 0.95, 'Controlled Variable: Boid Count N = 10,000, Mode = Headless (No Visualization)', 
                 ha='center', fontsize=11, style='italic')
 
-    ax_time, ax_fps, ax_rel, ax_bar = axes[0][0], axes[0][1], axes[1][0], axes[1][1]
+    ax_time, ax_speedup, ax_rel, ax_bar = axes[0][0], axes[0][1], axes[1][0], axes[1][1]
 
-    # Panel 1: step time vs block size
+    # Panel 1: Step Time (ms) vs Block Size
     for method in ALL_METHODS:
         bss = sorted(data[method].keys())
         if not bss:
@@ -313,30 +313,44 @@ def plot_experiment_2(data):
                      label=METHOD_LABELS[method], linewidth=2, markersize=8)
 
     ax_time.set_xlabel('Block Size', fontweight='bold')
-    ax_time.set_ylabel('Step Time (ms)', fontweight='bold')
-    ax_time.set_title('Step Time vs Block Size', fontsize=12)
+    ax_time.set_ylabel('Total Step Time (ms)', fontweight='bold')
+    ax_time.set_title('Absolute Step Time vs Block Size', fontsize=12, fontweight='bold')
     ax_time.set_xscale('log', base=2)
-    ax_time.legend()
+    ax_time.set_xticks([32, 64, 128, 256, 512, 1024])
+    ax_time.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax_time.legend(loc='upper left')
     ax_time.grid(True, which="both", ls="--", alpha=0.3)
 
-    # Panel 2: FPS vs block size
+    # Panel 2: Speedup relative to Naive at each Block Size
+    naive_bss = data.get("naive", {})
     for method in ALL_METHODS:
+        if method == "naive":
+            continue
         bss = sorted(data[method].keys())
         if not bss:
             continue
-        fps_vals = [data[method][bs].get('mean_fps', 0) for bs in bss]
-        ax_fps.plot(bss, fps_vals,
-                    marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
-                    label=METHOD_LABELS[method], linewidth=2, markersize=8)
+        speedups = []
+        valid_bss = []
+        for bs in bss:
+            n_time = naive_bss.get(bs, {}).get('mean_total_step_ms', 0)
+            m_time = data[method][bs].get('mean_total_step_ms', 0)
+            if n_time > 0 and m_time > 0:
+                speedups.append(n_time / m_time)
+                valid_bss.append(bs)
+        ax_speedup.plot(valid_bss, speedups,
+                        marker=METHOD_MARKERS[method], color=METHOD_COLORS[method],
+                        label=METHOD_LABELS[method], linewidth=2, markersize=8)
 
-    ax_fps.set_xlabel('Block Size', fontweight='bold')
-    ax_fps.set_ylabel('FPS', fontweight='bold')
-    ax_fps.set_title('FPS vs Block Size', fontsize=12)
-    ax_fps.set_xscale('log', base=2)
-    ax_fps.legend()
-    ax_fps.grid(True, which="both", ls="--", alpha=0.3)
+    ax_speedup.set_xlabel('Block Size', fontweight='bold')
+    ax_speedup.set_ylabel('Speedup (vs Naive at same BS)', fontweight='bold')
+    ax_speedup.set_title('Speedup over Naive vs Block Size', fontsize=12, fontweight='bold')
+    ax_speedup.set_xscale('log', base=2)
+    ax_speedup.set_xticks([32, 64, 128, 256, 512, 1024])
+    ax_speedup.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
+    ax_speedup.legend(loc='upper right')
+    ax_speedup.grid(True, which="both", ls="--", alpha=0.3)
 
-    # Panel 3: relative performance (normalized per method)
+    # Panel 3: Internal Sensitivity (% of method's own best performance)
     for method in ALL_METHODS:
         bss = sorted(data[method].keys())
         if not bss:
@@ -349,11 +363,13 @@ def plot_experiment_2(data):
                     label=METHOD_LABELS[method], linewidth=2, markersize=8)
 
     ax_rel.set_xlabel('Block Size', fontweight='bold')
-    ax_rel.set_ylabel('Relative Performance (% of best)', fontweight='bold')
-    ax_rel.set_title('Relative Performance vs Block Size', fontsize=12)
+    ax_rel.set_ylabel('Sensitivity (% of Method\'s Best)', fontweight='bold')
+    ax_rel.set_title('Internal Block Size Sensitivity (Self-Normalized)', fontsize=12, fontweight='bold')
     ax_rel.set_xscale('log', base=2)
+    ax_rel.set_xticks([32, 64, 128, 256, 512, 1024])
+    ax_rel.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
     ax_rel.axhline(y=100, color='gray', linestyle='--', linewidth=1, alpha=0.7)
-    ax_rel.legend()
+    ax_rel.legend(loc='lower left')
     ax_rel.grid(True, which="both", ls="--", alpha=0.3)
 
     # Panel 4: kernel breakdown at block_size=128 for all methods
@@ -372,19 +388,18 @@ def plot_experiment_2(data):
             'reshuffle':     'mean_kern_reshuffle_ms',
         }
         x = np.arange(len(methods_with_data))
-        width = 0.8 / len(kernel_names)
         bar_colors = plt.cm.tab10(np.linspace(0, 0.9, len(kernel_names)))
 
         bottoms = np.zeros(len(methods_with_data))
         for ki, (kname, col) in enumerate(col_map.items()):
             vals = [data[m][ref_bs].get(col, 0) for m in methods_with_data]
-            ax_bar.bar(x, vals, width=0.6, bottom=bottoms,
+            ax_bar.bar(x, vals, width=0.5, bottom=bottoms,
                        label=kname, color=bar_colors[ki], alpha=0.85)
             bottoms += np.array(vals)
 
         ax_bar.set_xlabel('Method', fontweight='bold')
         ax_bar.set_ylabel('Time (ms)', fontweight='bold')
-        ax_bar.set_title(f'Kernel Breakdown at BlockSize={ref_bs}', fontsize=12)
+        ax_bar.set_title(f'Kernel Phase Breakdown at BlockSize={ref_bs}', fontsize=12, fontweight='bold')
         ax_bar.set_xticks(x)
         ax_bar.set_xticklabels([METHOD_LABELS[m] for m in methods_with_data], rotation=10)
         ax_bar.legend(fontsize=8, loc='upper right')

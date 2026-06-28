@@ -33,9 +33,8 @@ ALL_METHODS = ["naive", "scattered", "coherent"]
 # Use fewer frames for naive at high N to avoid excessive runtime
 EXPERIMENT_1_CONFIG = {
     "name": "vary_n",
-    # N values - cover a broad range up to 1,000,000 boids. Naive capped at 20k to avoid timeouts
+    # N values - cover a broad range up to 1,000,000 boids.
     "n_values":         [1000, 2000, 5000, 10000, 20000, 50000, 100000, 200000, 500000, 1000000],
-    "naive_max_n":      20000,   # naive only runs up to this N
     "methods":          ALL_METHODS,
     "block_size":       128,
     "frames":           500,     # number of frames to average over
@@ -61,7 +60,7 @@ def ensure_results_dir():
     Path(RUN_DIR).mkdir(parents=True, exist_ok=True)
 
 
-def run_simulation(n, block_size, method, visualize, frames, output_file, timeout=600):
+def run_simulation(n, block_size, method, visualize, frames, output_file, timeout=120):
     """
     Run a single simulation with specified parameters.
     Returns: (success, runtime_seconds)
@@ -137,11 +136,6 @@ def experiment_1_vary_n():
         visualize = config["visualize"]  # Always False — no OpenGL observer effect
 
         for n in config["n_values"]:
-            # Skip large N for naive (would take too long)
-            if method == "naive" and n > config["naive_max_n"]:
-                print(f"\n  [SKIP] naive N={n} > naive_max_n={config['naive_max_n']}")
-                continue
-
             output_file = os.path.join(
                 RUN_DIR,
                 f"exp1_{method}_N{n}_B{config['block_size']}_novis.csv"
@@ -149,14 +143,18 @@ def experiment_1_vary_n():
 
             # Reduce frames for large N to keep runtime reasonable
             frames = config["frames"]
-            if method == "naive" and n >= 10000:
-                frames = 200
-            elif method == "naive" and n >= 5000:
-                frames = 300
-            elif n >= 500000:
-                frames = 200
-            elif n >= 100000:
-                frames = 300
+            if method == "naive":
+                if n >= 50000:
+                    frames = 60
+                elif n >= 10000:
+                    frames = 150
+                elif n >= 5000:
+                    frames = 250
+            else:
+                if n >= 500000:
+                    frames = 150
+                elif n >= 100000:
+                    frames = 250
 
             success, runtime = run_simulation(
                 n=n,
@@ -291,11 +289,9 @@ def estimate_time(config1, config2):
     runs_exp1 = sum(
         1 for m in config1["methods"]
         for n in config1["n_values"]
-        if not (m == "naive" and n > config1["naive_max_n"])
     )
     runs_exp2 = len(config2["methods"]) * len(config2["block_sizes"])
     total = runs_exp1 + runs_exp2
-    # ~500 frames naive@10k ≈ 30s, grid methods much faster
     return total, total * 0.5, total * 2.0
 
 
@@ -317,7 +313,6 @@ def main():
     total_runs, est_min, est_max = estimate_time(EXPERIMENT_1_CONFIG, EXPERIMENT_2_CONFIG)
     print(f"\nExperiment 1 (Vary N):          methods={EXPERIMENT_1_CONFIG['methods']}")
     print(f"  N values:  {EXPERIMENT_1_CONFIG['n_values']}")
-    print(f"  naive cap: N <= {EXPERIMENT_1_CONFIG['naive_max_n']}")
     print(f"  visualize: OFF (no OpenGL observer effect)")
     print(f"\nExperiment 2 (Vary Block Size): methods={EXPERIMENT_2_CONFIG['methods']}")
     print(f"  N={EXPERIMENT_2_CONFIG['n']}, block sizes={EXPERIMENT_2_CONFIG['block_sizes']}")
